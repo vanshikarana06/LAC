@@ -43,13 +43,13 @@ class LegalIngestor:
                             Document(page_content=cleaned_content, metadata=doc.metadata)
                         )
  
-        print(f"\n✅ Loaded {len(cleaned_documents)} pages from PDFs")
+        print(f"\n Loaded {len(cleaned_documents)} pages from PDFs")
  
-        # ── Chunking ──────────────────────────────────────────────────────────
+        #  Chunking
         # Larger chunks = more context per retrieval = better answers
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,        # was 800 — legal clauses need more space
-            chunk_overlap=200,      # was 100 — overlap prevents cutting mid-clause
+            chunk_size=1500,        
+            chunk_overlap=200,      
             separators=[
                 "\nSection", "\nSECTION",
                 "\nArticle", "\nARTICLE",
@@ -61,14 +61,14 @@ class LegalIngestor:
         chunks = splitter.split_documents(cleaned_documents)
         print(f"✅ Split into {len(chunks)} chunks")
  
-        # ── Build Vector DB ───────────────────────────────────────────────────
-        print("\n⏳ Building vector database (this may take a few minutes)...")
+        # Build Vector DB 
+        print("\n Building vector database (this may take a few minutes)...")
         Chroma.from_documents(
             documents=chunks,
             embedding=self.embeddings,
             persist_directory=self.db_path
         )
-        print("🎉 Success! Knowledge base is built and persistent.")
+        print(" Success! Knowledge base is built and persistent.")
         print(f"   Chunks stored: {len(chunks)}")
  
  

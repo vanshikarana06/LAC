@@ -3,8 +3,7 @@ import chromadb
 # 1. Connect to the database you just created
 client = chromadb.PersistentClient(path="data_vector_db")
 
-# 2. Get the collection (Chroma creates a default one if you didn't name it)
-# Since we used LangChain, it usually names the collection 'langchain'
+# 2. Get the collection
 collection = client.get_collection(name="langchain")
 
 # 3. Peek at the first 3 entries
