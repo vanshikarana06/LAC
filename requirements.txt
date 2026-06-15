@@ -14,3 +14,5 @@ chromadb
 sentence-transformers
 pypdf
 huggingface-hub
+tavily-python 
+langchain-tavily
