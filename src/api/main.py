@@ -1,5 +1,7 @@
+from contextlib import asynccontextmanager
 import os
 import re
+import time
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,14 +16,21 @@ load_dotenv()
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder 
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
 
 import groq as groq_sdk
+import sqlite3
+from langchain_tavily import TavilySearch 
+
+# DB_SESSION_PATH = "session_store.db"
+DB_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "session_store.db")
 
 DB_PATH  = os.getenv("DB_PATH", "data_vector_db")
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
+TAVILY_KEY = os.getenv("TAVILY_API_KEY")
+
 
 # Auto-pick working Groq model
 def get_working_model():
@@ -35,7 +44,7 @@ def get_working_model():
     ]
     for m in preferred:
         if m in available:
-            print(f"✅ Using model: {m}")
+            print(f" Using model: {m}")
             return m
     fallback = available[0]
     print(f" Falling back to: {fallback}")
@@ -103,7 +112,7 @@ def detect_question_type(question: str) -> str:
     # Default: simple factual question
     return "simple"
 
-# PHASE 1 — FEATURE 2: QUERY DECOMPOSITION
+# QUERY DECOMPOSITION
 # Breaks compound questions into sub-questions using the LLM,
 # answers each separately, then joins the results
 
@@ -134,7 +143,7 @@ def decompose_question(question: str) -> list[str]:
     # Fallback: if decomposition fails, return original question
     return sub_questions if sub_questions else [question]
 
-# PHASE 1 — FEATURE 3: SPECIALIZED PROMPTS
+#SPECIALIZED PROMPTS
 # Different prompt templates for different question types.
 # Same LLM + different instructions = significantly better answers.
 
@@ -187,13 +196,15 @@ SYSTEM_PROMPTS = {
 # Prompt to rephrase follow-up questions into standalone questions
 # e.g. "Who is eligible for it?" → "Who is eligible for gratuity?"
 REPHRASE_PROMPT = ChatPromptTemplate.from_messages([
-    ("system", """Given the chat history and a follow-up question, rephrase the
-follow-up into a standalone question with all necessary context.
-Do NOT answer — only rephrase. If already standalone, return as-is."""),
+    ("system", """Your ONLY job is to rephrase the follow-up question as a standalone question.
+DO NOT answer the question.
+DO NOT add any information.
+DO NOT say you don't have access to information.
+ONLY output the rephrased question and nothing else.
+If the question is already standalone, return it exactly as-is."""),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
 ])
-
 rephrase_chain = REPHRASE_PROMPT | llm | StrOutputParser()
 
 
@@ -201,23 +212,86 @@ rephrase_chain = REPHRASE_PROMPT | llm | StrOutputParser()
 # SESSION STORE + HISTORY MANAGEMENT
 # Stores conversation history per session_id in memory.
 # trim_history_to_fit prevents token overflow on long conversations.
-# IMPORTANT: these must be defined BEFORE answer_single_question()
 
-session_store: dict[str, list] = {}
-MAX_HISTORY = 6   # keep last 6 exchanges (12 messages)
+def init_db():
+    conn= sqlite3.connect(DB_SESSION_PATH)
+    cursor= conn.cursor()
+    # Use triple quotes for multi-line SQL strings
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id          INTEGER  PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT     NOT NULL,
+        msg_type    TEXT     NOT NULL,
+        msg_content TEXT     NOT NULL,
+        msg_time    REAL     NOT NULL
+    )
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS IDX_SESSION_ID ON messages(SESSION_ID);
+    """)
+    conn.commit()  
+    conn.close()  
 
 def get_history(session_id: str) -> list:
-    """Get chat history for a session."""
-    return session_store.get(session_id, [])
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM messages 
+            WHERE session_id = ? 
+            ORDER BY msg_time ASC
+        """, (session_id,))
+        
+        # 2. fetch all rows
+        rows = cursor.fetchall()
+        
+        # 3. convert each row to HumanMessage or AIMessage
+        history = []
+        for _, _, msg_type, msg_content, _ in rows:
+            if msg_type == "human":
+                history.append(HumanMessage(content=msg_content))
+            elif msg_type == "ai":
+                history.append(AIMessage(content=msg_content))  
 
+        return history
+
+    finally:
+        # 4. close connection (finally ensures this runs even if an error happens)
+        conn.close()
+    
 def save_history(session_id: str, human: str, ai: str):
-    """Save a new exchange to session history."""
-    if session_id not in session_store:
-        session_store[session_id] = []
-    session_store[session_id].append(HumanMessage(content=human))
-    session_store[session_id].append(AIMessage(content=ai))
-    # Keep only last MAX_HISTORY exchanges
-    session_store[session_id] = session_store[session_id][-(MAX_HISTORY * 2):]
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        # YOUR TASK:
+        cursor.execute("""INSERT INTO messages (session_id, msg_type, msg_content, msg_time)
+        VALUES (?, ?, ?, ?)""", (session_id, "human", human, time.time())) # VALUES ();
+        cursor.execute("""INSERT INTO messages (session_id, msg_type, msg_content, msg_time)
+        VALUES (?, ?, ?, ?)""", (session_id, "ai", ai, time.time())) # VALUES ();
+        # commit
+        conn.commit()  #Without commit()  data sits in buffer in  ram 
+
+    finally:
+          
+        conn.close()
+
+def cleanup_old_sessions(days: int = 30):
+    """
+    Delete messages older than X days.
+    Called periodically — not on every request.
+    This is called a TTL — Time To Live policy.
+    """
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        cutoff = time.time() - (days * 24 * 60 * 60)
+        cursor.execute("""
+            DELETE FROM messages 
+            WHERE msg_time < ?
+        """, (cutoff,))
+        conn.commit()
+    finally:
+        conn.close()
 
 def trim_history_to_fit(chat_history: list, max_history_tokens: int = 1500) -> list:
     """
@@ -234,10 +308,40 @@ def trim_history_to_fit(chat_history: list, max_history_tokens: int = 1500) -> l
         chat_history = chat_history[2:]
     return chat_history
 
-# CORE: PURE LCEL ANSWER FUNCTION
+# PURE LCEL ANSWER FUNCTION
 # Full RAG pipeline using only langchain-core primitives.
-# No deprecated chain helpers — works on LangChain 1.x+
+
 # Flow: trim history → rephrase → retrieve → build prompt → call LLM
+ 
+def get_active_session_count() -> int:
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(DISTINCT session_id) FROM messages")
+        return cursor.fetchone()[0]   # fetchone() returns one row, [0] gets first column
+    finally:
+        conn.close()
+
+def web_search_fallback(question: str) -> str:
+    """If similarity score is too low, call web search API and return results as context."""
+    # Placeholder implementation — replace with actual web search API call
+    print("Performing web search for:", question)
+    # Simulate web search results
+    tool = TavilySearch(
+    max_results=5,
+    api_key=TAVILY_KEY
+      )
+    results = tool.invoke({"query": question}) #results returns a list of search results. Each result has:pythonresult["content"]  AND result["url"] 
+    results = tool.invoke({"query": question})
+    # print(f"🔍 Tavily keys: {results.keys()}")
+    # print(f"🔍 Tavily result: {str(results)[:500]}")
+    results_text = "Web Search Results:\n\n" + "\n\n---\n\n".join(
+    f"{res['content']}\nSource: {res['url']}"
+    for res in results['results']   # ← add ['results'] here
+     )
+    return results_text
+    
+
 
 def answer_single_question(
     question: str,
@@ -245,28 +349,51 @@ def answer_single_question(
     question_type: str
 ) -> tuple[str, list]:
 
-    # Step 0 — trim history to prevent token overflow
+    #trim history to prevent token overflow
     chat_history = trim_history_to_fit(chat_history)
 
-    # Step 1 — rephrase follow-up using history (only if history exists)
+    # rephrase follow-up using history (only if history exists)
     # Converts "Who is eligible?" → "Who is eligible for gratuity?"
     if chat_history:
         standalone = rephrase_chain.invoke({
             "input": question,
             "chat_history": chat_history,
         })
-        print(f"🔄 Rephrased: {standalone}")
+        print(f"Rephrased: {standalone}")
     else:
         standalone = question
 
-    # Step 2 — retrieve relevant chunks from ChromaDB using rephrased question
-    docs    = retriever.invoke(standalone)
+    # 2 retrieve relevant chunks from ChromaDB using rephrased question
+    # NEW — returns (doc, score) tuples
+    docs_with_scores = vectordb.similarity_search_with_relevance_scores(
+    standalone, k=6
+          )
+
+    # separate docs and scores
+    docs          = [doc for doc, score in docs_with_scores]
+    # After getting docs_with_scores:
+    highest_score = max(
+    [max(score, 0) for doc, score in docs_with_scores],
+    default=0)
+    print(f"Highest similarity score: {highest_score:.3f}")
     context = "\n\n---\n\n".join(doc.page_content for doc in docs)
+    SIMILARITY_THRESHOLD = 0.4
 
-    # Step 3 — pick correct system prompt based on question type
-    system_msg = SYSTEM_PROMPTS[question_type].format(context=context)
+    if highest_score < SIMILARITY_THRESHOLD:
+        print(f"⚠️ Score {highest_score:.3f} below threshold → triggering web search")
+        # web search goes here — we build this next
+        context = web_search_fallback(standalone)
+    else:
+        print(f"✅ Score {highest_score:.3f} above threshold → using ChromaDB")
+        context = "\n\n---\n\n".join(doc.page_content for doc in docs)
 
-    # Step 4 — build full message list: system + history + current question
+    # 3 pick correct system prompt based on question type
+    # escape curly braces in PDF content to prevent template injection
+    safe_context = context.replace("{", "{{").replace("}", "}}")
+    system_msg = SYSTEM_PROMPTS[question_type].format(context=safe_context)
+ 
+
+    # 4 build full message list: system + history + current question
     messages = [("system", system_msg)]
     for msg in chat_history:
         if isinstance(msg, HumanMessage):
@@ -283,8 +410,14 @@ def answer_single_question(
     return answer, docs
 
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    cleanup_old_sessions(days=30)    # ← called here at startup
+    yield
 # FastAPI App
-app = FastAPI(title="Legal Advisor AI")
+app = FastAPI(title="Legal Advisor AI", lifespan=lifespan)   
 
 app.add_middleware(
     CORSMiddleware,
@@ -327,7 +460,7 @@ async def ask_question(req: QueryRequest):
 
     # Step 1: Detect question type 
     question_type = detect_question_type(question)
-    print(f"\n🔍 Type: {question_type} | Q: {question}")
+    print(f"\nType: {question_type} | Q: {question}")
 
     try:
         # Step 2: Route to correct handler
@@ -380,7 +513,13 @@ async def ask_question(req: QueryRequest):
 @app.delete("/session/{session_id}")
 async def clear_session(session_id: str):
     """Clear chat history — called when user clicks New Chat."""
-    session_store.pop(session_id, None)
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.commit()
+    finally:
+        conn.close()
     return {"cleared": session_id}
 
 
@@ -390,7 +529,7 @@ async def health():
         "status":          "ok",
         "docs_in_db":      vectordb._collection.count(),
         "model":           MODEL,
-        "active_sessions": len(session_store),
+        "active_sessions": get_active_session_count(),
     }
 
 @app.get("/acts")
@@ -398,3 +537,6 @@ async def list_acts():
     all_meta = vectordb._collection.get(include=["metadatas"])["metadatas"]
     acts = sorted({os.path.basename(m.get("source", "")) for m in all_meta if m})
     return {"acts": acts}
+
+
+

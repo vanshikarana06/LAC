@@ -32,7 +32,7 @@ class LegalIngestor:
  
         for file in os.listdir(self.data_path):
             if file.endswith(".pdf"):
-                print(f"📄 Ingesting: {file}")
+                print(f" Ingesting: {file}")
                 loader = PyPDFLoader(os.path.join(self.data_path, file))
                 raw_docs = loader.load()
  
@@ -59,7 +59,7 @@ class LegalIngestor:
         )
  
         chunks = splitter.split_documents(cleaned_documents)
-        print(f"✅ Split into {len(chunks)} chunks")
+        print(f" Split into {len(chunks)} chunks")
  
         # Build Vector DB 
         print("\n Building vector database (this may take a few minutes)...")
