@@ -295,6 +295,8 @@
         border: 1px solid #4a3a00;
         color: #9a7a00;
       }
+      .source-db  { background: #1a1a2e; border: 1px solid #3a3a6e; color: #9a9ace; }
+      .source-web { background: #0a1a0a; border: 1px solid #2a5a2a; color: #6aba6a; }
 
       .sources {
         margin-top: 10px;
@@ -586,6 +588,10 @@
         multi_hop: { label: "🔗 Multi-law", cls: "qtype-multi_hop" },
         compound: { label: "📋 Compound", cls: "qtype-compound" },
       };
+      const SOURCE_LABELS = {
+          vector_search: { label: "📚 Legal DB",   cls: "source-db"  },
+          web_search:    { label: "🌐 Web Search", cls: "source-web" },
+    };
 
       async function checkHealth() {
         try {
@@ -633,39 +639,46 @@
     </div>`;
       }
 
-      function addMessage(role, html, sources = [], qtype = null) {
-        document.getElementById("welcome")?.remove();
-        const win = document.getElementById("chatWindow");
-        const avatar = role === "user" ? "🧑" : "⚖️";
+      function addMessage(role, html, sources = [], qtype = null, querySource = null) {
+    document.getElementById("welcome")?.remove();
+    const win    = document.getElementById("chatWindow");
+    const avatar = role === "user" ? "🧑" : "⚖️";
 
-        let typeBadge = "";
-        if (role === "ai" && qtype && TYPE_LABELS[qtype]) {
-          const t = TYPE_LABELS[qtype];
-          typeBadge = `<div class="qtype-badge ${t.cls}" style="margin-bottom:8px">${t.label}</div>`;
-        }
+    // question type badge
+    let typeBadge = "";
+    if (role === "ai" && qtype && TYPE_LABELS[qtype]) {
+        const t = TYPE_LABELS[qtype];
+        typeBadge = `<div class="qtype-badge ${t.cls}" style="margin-bottom:8px">${t.label}</div>`;
+    }
 
-        let sourcesHtml = "";
-        if (sources.length) {
-          sourcesHtml = `<div class="sources">${sources
-            .map(
-              (s) =>
-                `<span class="source-tag">📄 ${s.source}${s.page != null ? " · p." + (s.page + 1) : ""}</span>`,
-            )
-            .join("")}</div>`;
-        }
+    // source badge — Legal DB or Web Search
+    let sourceBadge = "";
+    if (role === "ai" && querySource && SOURCE_LABELS[querySource]) {
+        const s = SOURCE_LABELS[querySource];
+        sourceBadge = `<div class="qtype-badge ${s.cls}" style="margin-bottom:8px">${s.label}</div>`;
+    }
 
-        const div = document.createElement("div");
-        div.className = `msg ${role}`;
-        div.innerHTML = `
-      <div class="msg-avatar">${avatar}</div>
-      <div class="msg-body">
-        ${typeBadge}
-        <div class="bubble">${html}</div>
-        ${sourcesHtml}
-      </div>`;
-        win.appendChild(div);
-        win.scrollTop = win.scrollHeight;
-      }
+    // sources list
+    let sourcesHtml = "";
+    if (sources.length) {
+        sourcesHtml = `<div class="sources">${sources.map(s =>
+            `<span class="source-tag">📄 ${s.source}${s.page != null ? " · p." + (s.page + 1) : ""}</span>`
+        ).join("")}</div>`;
+    }
+
+    const div = document.createElement("div");
+    div.className = `msg ${role}`;
+    div.innerHTML = `
+        <div class="msg-avatar">${avatar}</div>
+        <div class="msg-body">
+            ${typeBadge}
+            ${sourceBadge}
+            <div class="bubble">${html}</div>
+            ${sourcesHtml}
+        </div>`;
+    win.appendChild(div);
+    win.scrollTop = win.scrollHeight;
+}
 
       function addTyping() {
         document.getElementById("welcome")?.remove();
@@ -727,6 +740,7 @@
               formatAnswer(data.answer),
               data.sources,
               data.question_type,
+              data.query_source  
             );
           }
         } catch {
