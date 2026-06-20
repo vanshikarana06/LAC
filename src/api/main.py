@@ -30,6 +30,8 @@ DB_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
 DB_PATH  = os.getenv("DB_PATH", "data_vector_db")
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 
 # Auto-pick working Groq model
@@ -87,6 +89,26 @@ DOMAINS = {
     "property":  ["property", "land", "rent", "lease", "mortgage", "house"],
     "family":    ["divorce", "marriage", "wife", "husband", "alimony", "custody"],
 }
+# ── Topic classifier — prevents off-topic web searches ───────────────────────
+LEGAL_KEYWORDS = [
+    "law", "act", "legal", "court", "judge", "rights", "section",
+    "punishment", "crime", "contract", "property", "marriage", "divorce",
+    "employment", "worker", "salary", "wage", "compensation", "gratuity",
+    "maternity", "consumer", "rti", "constitution", "fundamental", "article",
+    "ipc", "judgement", "verdict", "case", "petition", "bail", "warrant",
+    "harassment", "discrimination", "termination", "dispute", "police",
+    "arrest", "fir", "complaint", "tribunal", "relief", "damages", "penalty",
+    "offence", "accused", "defendant", "plaintiff", "advocate", "solicitor"
+]
+
+def is_legal_question(question: str) -> bool:
+    """
+    Returns True if question is legal in nature.
+    Prevents web search from being triggered for 
+    completely off-topic questions like iPhone prices.
+    """
+    q = question.lower()
+    return any(keyword in q for keyword in LEGAL_KEYWORDS)
 
 def detect_question_type(question: str) -> str:
     """
@@ -132,7 +154,8 @@ decompose_chain = decompose_prompt | llm | StrOutputParser()
 
 def decompose_question(question: str) -> list[str]:
     """Uses LLM to break a compound question into sub-questions."""
-    result = decompose_chain.invoke({"question": question})
+    
+    result = call_with_retry(decompose_chain, {"question": question})
     lines  = [l.strip() for l in result.strip().split("\n") if l.strip()]
     sub_questions = []
     for line in lines:
@@ -199,14 +222,31 @@ REPHRASE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """Your ONLY job is to rephrase the follow-up question as a standalone question.
 DO NOT answer the question.
 DO NOT add any information.
-DO NOT say you don't have access to information.
+DO NOT say you you lack  access to information.
 ONLY output the rephrased question and nothing else.
 If the question is already standalone, return it exactly as-is."""),
     MessagesPlaceholder("chat_history"),
     ("human", "{input}"),
 ])
+
 rephrase_chain = REPHRASE_PROMPT | llm | StrOutputParser()
 
+
+def call_with_retry(chain , input_data , max_retries=3):
+    """" Wraps any LangChain .invoke() call with retry logic.
+    Handles transient network failures with exponential backoff."""
+    for attempt in range(max_retries):
+        try:
+            return chain.invoke(input_data)
+        
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise  
+            else:
+                wait_time = 2 ** attempt
+
+                print(f"⚠️ Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
 
 
 # SESSION STORE + HISTORY MANAGEMENT
@@ -321,24 +361,25 @@ def get_active_session_count() -> int:
         return cursor.fetchone()[0]   # fetchone() returns one row, [0] gets first column
     finally:
         conn.close()
-
 def web_search_fallback(question: str) -> str:
-    """If similarity score is too low, call web search API and return results as context."""
-    # Placeholder implementation — replace with actual web search API call
-    print("Performing web search for:", question)
-    # Simulate web search results
+    # Safety — truncate query to 200 chars max
+    # Tavily fails on very long queries
+    query = question[:200]
+    
     tool = TavilySearch(
-    max_results=5,
-    api_key=TAVILY_KEY
-      )
-    results = tool.invoke({"query": question}) #results returns a list of search results. Each result has:pythonresult["content"]  AND result["url"] 
-    results = tool.invoke({"query": question})
-    # print(f"🔍 Tavily keys: {results.keys()}")
-    # print(f"🔍 Tavily result: {str(results)[:500]}")
+        max_results=5,
+        api_key=TAVILY_KEY
+    )
+    results = tool.invoke({"query": query})
+    
+    # Safety check — results key may not exist
+    if "results" not in results:
+        return "Web search returned no results for this query."
+    
     results_text = "Web Search Results:\n\n" + "\n\n---\n\n".join(
-    f"{res['content']}\nSource: {res['url']}"
-    for res in results['results']   # ← add ['results'] here
-     )
+        f"{res['content']}\nSource: {res['url']}"
+        for res in results['results']
+    )
     return results_text
     
 
@@ -346,8 +387,9 @@ def web_search_fallback(question: str) -> str:
 def answer_single_question(
     question: str,
     chat_history: list,
-    question_type: str
-) -> tuple[str, list]:
+    question_type: str,
+    
+) -> tuple[str, list, str]:
 
     #trim history to prevent token overflow
     chat_history = trim_history_to_fit(chat_history)
@@ -355,10 +397,10 @@ def answer_single_question(
     # rephrase follow-up using history (only if history exists)
     # Converts "Who is eligible?" → "Who is eligible for gratuity?"
     if chat_history:
-        standalone = rephrase_chain.invoke({
-            "input": question,
-            "chat_history": chat_history,
-        })
+        standalone = call_with_retry(rephrase_chain, {
+           "input": question,
+           "chat_history": chat_history,
+})
         print(f"Rephrased: {standalone}")
     else:
         standalone = question
@@ -380,12 +422,27 @@ def answer_single_question(
     SIMILARITY_THRESHOLD = 0.4
 
     if highest_score < SIMILARITY_THRESHOLD:
-        print(f"⚠️ Score {highest_score:.3f} below threshold → triggering web search")
-        # web search goes here — we build this next
-        context = web_search_fallback(standalone)
+        if not is_legal_question(standalone):
+            # completely off-topic — refuse politely
+            return (
+                "I am a Legal Advisor AI specializing in Indian law. "
+                "I can only answer questions related to Indian legal acts, "
+                "rights, and court judgements. Please ask a legal question.",
+                [],
+                "out_of_scope"
+            )
+        # legal but not in DB → web search
+        print(f"⚠️ Below threshold → web search")
+        context      = web_search_fallback(standalone)
+        docs         = []
+        query_source = "web_search"
+    
     else:
         print(f"✅ Score {highest_score:.3f} above threshold → using ChromaDB")
-        context = "\n\n---\n\n".join(doc.page_content for doc in docs)
+        context      = "\n\n---\n\n".join(doc.page_content for doc in docs)
+        query_source = "vector_search"
+
+    
 
     # 3 pick correct system prompt based on question type
     # escape curly braces in PDF content to prevent template injection
@@ -405,9 +462,9 @@ def answer_single_question(
     # Step 5 — build chain and call LLM
     prompt = ChatPromptTemplate.from_messages(messages)
     chain  = prompt | llm | StrOutputParser()
-    answer = chain.invoke({})
+    answer = call_with_retry(chain, {})
 
-    return answer, docs
+    return answer, docs, query_source
 
 
 
@@ -441,7 +498,8 @@ class QueryResponse(BaseModel):
     answer: str
     sources: list[Source]
     session_id: str
-    question_type: str         
+    question_type: str 
+    query_source: str          
 
 
 @app.get("/")
@@ -472,7 +530,7 @@ async def ask_question(req: QueryRequest):
             all_answers = []
             all_docs    = []
             for sub_q in sub_questions:
-                ans, docs = answer_single_question(sub_q, chat_history, "simple")
+                ans, docs, source = answer_single_question(sub_q, chat_history, "simple")
                 all_answers.append(f"**{sub_q}**\n{ans}")
                 all_docs.extend(docs)
 
@@ -481,7 +539,7 @@ async def ask_question(req: QueryRequest):
 
         else:
             # scenario, multi_hop, simple → answer directly with correct prompt
-            answer, docs = answer_single_question(question, chat_history, question_type)
+            answer, docs , query_source = answer_single_question(question, chat_history, question_type)
 
     except Exception as e:
         import traceback
@@ -507,6 +565,7 @@ async def ask_question(req: QueryRequest):
         sources=sources,
         session_id=session_id,
         question_type=question_type,
+        query_source=query_source, 
     )
 
 
