@@ -180,6 +180,9 @@ Use the context below to:
 4. Quote specific section numbers where possible
 5. Mention any exceptions or conditions that apply
 
+If the context does not contain a real, verifiable answer, explicitly say so.
+NEVER invent case names, party names, or judgement years that are not in the context.
+
 Context:
 {context}"""
 
@@ -193,6 +196,9 @@ Use the context below to:
 4. Give a unified practical answer
 5. Quote section numbers from each relevant Act
 
+If the context does not contain a real, verifiable answer, explicitly say so.
+NEVER invent case names, party names, or judgement years that are not in the context.
+
 Context:
 {context}"""
 
@@ -204,6 +210,9 @@ Use ONLY the context provided below to answer the question.
 - Quote the relevant section or article number when possible.
 - Structure your answer with numbered points if there are multiple conditions or rights.
 - If the answer is not in the context, say what related information you found instead.
+
+If the context does not contain a real, verifiable answer, explicitly say so.
+NEVER invent case names, party names, or judgement years that are not in the context.
 
 Context:
 {context}"""
@@ -348,8 +357,6 @@ def trim_history_to_fit(chat_history: list, max_history_tokens: int = 1500) -> l
         chat_history = chat_history[2:]
     return chat_history
 
-# PURE LCEL ANSWER FUNCTION
-# Full RAG pipeline using only langchain-core primitives.
 
 # Flow: trim history → rephrase → retrieve → build prompt → call LLM
  
@@ -362,21 +369,29 @@ def get_active_session_count() -> int:
     finally:
         conn.close()
 def web_search_fallback(question: str) -> str:
-    # Safety — truncate query to 200 chars max
-    # Tavily fails on very long queries
     query = question[:200]
-    
+
+    INDIAN_LEGAL_DOMAINS = [
+        "indiankanoon.org",
+        "sci.gov.in",
+        "livelaw.in",
+        "barandbench.com",
+        "indiacode.nic.in",
+    ]
+
     tool = TavilySearch(
         max_results=5,
-        api_key=TAVILY_KEY
+        api_key=TAVILY_KEY,
+        include_domains=INDIAN_LEGAL_DOMAINS,
+        country="india",
     )
+    print("Performing web search for:", query)
     results = tool.invoke({"query": query})
-    
-    # Safety check — results key may not exist
-    if "results" not in results:
-        return "Web search returned no results for this query."
-    
-    results_text = "Web Search Results:\n\n" + "\n\n---\n\n".join(
+
+    if "results" not in results or not results["results"]:
+        return "No relevant results found from Indian legal sources for this query."
+
+    results_text = "Web Search Results (Indian Legal Sources):\n\n" + "\n\n---\n\n".join(
         f"{res['content']}\nSource: {res['url']}"
         for res in results['results']
     )
@@ -432,7 +447,7 @@ def answer_single_question(
                 "out_of_scope"
             )
         # legal but not in DB → web search
-        print(f"⚠️ Below threshold → web search")
+        print(f" Below threshold → web search")
         context      = web_search_fallback(standalone)
         docs         = []
         query_source = "web_search"
