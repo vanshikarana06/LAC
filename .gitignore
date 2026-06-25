@@ -1,0 +1,20 @@
+# Environment variables — NEVER push API keys
+.env
+
+# Vector database — too large for GitHub
+data_vector_db/
+
+# SQLite session storage — user data
+session_store.db
+
+# Python virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
