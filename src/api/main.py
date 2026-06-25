@@ -11,6 +11,11 @@ from dotenv import load_dotenv
 from typing import Optional
 import uuid
 
+from typing import TypedDict, Annotated
+from langchain_core.messages import BaseMessage
+import operator
+from langgraph.graph import StateGraph, END
+
 load_dotenv()
 
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -32,6 +37,20 @@ GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
+
+SIMILARITY_THRESHOLD = 0.45 
+
+class LegalAdvisorState(TypedDict):
+    original_question:   str
+    session_id:          str
+    question_type:       str
+    standalone_question: str
+    retrieved_docs:      list
+    similarity_score:    float
+    context:             str
+    query_source:        str
+    chat_history:        list
+    answer:              str
 
 
 # Auto-pick working Groq model
@@ -124,7 +143,7 @@ def detect_question_type(question: str) -> str:
     # Check 2: spans 2+ legal domains → needs multi-hop retrieval
     matched = sum(1 for kws in DOMAINS.values() if any(kw in q for kw in kws))
     if matched >= 2:
-        return "multi_hop"
+        return "multi _hop"
 
     # Check 3: multiple questions in one sentence
     compound_signals = ["and how", "and what", "also", "additionally", "as well as"]
@@ -397,96 +416,265 @@ def web_search_fallback(question: str) -> str:
     )
     return results_text
     
+# langraph nodes
+def node_load_history(state: LegalAdvisorState)->dict:
+    """
+    Load the conversation history from sqlite for this session
+    """
+    session_id = state["session_id"]
+    history = get_history(session_id)
+    return {"chat_history": history}
+def node_classify_question(state: LegalAdvisorState)->dict:
+    """
+    Classify the question type
+    """
+    question_type = detect_question_type(state["original_question"])
+    return {"question_type": question_type}
+def node_rephrase_query(state: LegalAdvisorState)->dict:
+    """
+    Rephrase the question using the conversation history
+    """
+    chat_history=state["chat_history"]
+    original_question= state["original_question"]
 
-
-def answer_single_question(
-    question: str,
-    chat_history: list,
-    question_type: str,
-    
-) -> tuple[str, list, str]:
-
-    #trim history to prevent token overflow
     chat_history = trim_history_to_fit(chat_history)
 
-    # rephrase follow-up using history (only if history exists)
-    # Converts "Who is eligible?" → "Who is eligible for gratuity?"
     if chat_history:
         standalone = call_with_retry(rephrase_chain, {
-           "input": question,
-           "chat_history": chat_history,
-})
-        print(f"Rephrased: {standalone}")
+            "input": state["original_question"],
+            "chat_history": state["chat_history"],
+        })
     else:
-        standalone = question
+        standalone = original_question
+    return {"standalone_question": standalone,
+            "chat_history": chat_history}
 
-    # 2 retrieve relevant chunks from ChromaDB using rephrased question
-    # NEW — returns (doc, score) tuples
-    docs_with_scores = vectordb.similarity_search_with_relevance_scores(
-    standalone, k=6
-          )
-
-    # separate docs and scores
-    docs          = [doc for doc, score in docs_with_scores]
-    # After getting docs_with_scores:
-    highest_score = max(
-    [max(score, 0) for doc, score in docs_with_scores],
-    default=0)
-    print(f"Highest similarity score: {highest_score:.3f}")
-    context = "\n\n---\n\n".join(doc.page_content for doc in docs)
-    SIMILARITY_THRESHOLD = 0.4
-
-    if highest_score < SIMILARITY_THRESHOLD:
-        if not is_legal_question(standalone):
-            # completely off-topic — refuse politely
-            return (
-                "I am a Legal Advisor AI specializing in Indian law. "
-                "I can only answer questions related to Indian legal acts, "
-                "rights, and court judgements. Please ask a legal question.",
-                [],
-                "out_of_scope"
-            )
-        # legal but not in DB → web search
-        print(f" Below threshold → web search")
-        context      = web_search_fallback(standalone)
-        docs         = []
-        query_source = "web_search"
+def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
+    standalone = state["standalone_question"]
+    print(f"🔍 Standalone: '{standalone}'")
     
-    else:
-        print(f"✅ Score {highest_score:.3f} above threshold → using ChromaDB")
+    docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)
+    print(f"🎯 Raw scores: {[round(score, 3) for doc, score in docs_with_scores]}")
+    
+    docs          = [doc for doc, score in docs_with_scores]
+    highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
+    print(f"🎯 Highest after clamping: {highest_score:.3f}")
+    
+    return {"retrieved_docs": docs, "similarity_score": highest_score}
+
+def node_check_threshold(state: LegalAdvisorState) -> dict:
+    """
+    Check similarity score and route to correct source:
+    - Above threshold → vector_search (ChromaDB)
+    - Below threshold + legal → web_search (Tavily)
+    - Below threshold + not legal → out_of_scope (refuse)
+    """
+    similarity_score    = state["similarity_score"]
+    standalone_question = state["standalone_question"]
+    docs                = state["retrieved_docs"]      # ← read from state
+
+    if similarity_score >= SIMILARITY_THRESHOLD:
+        # ChromaDB has relevant content
         context      = "\n\n---\n\n".join(doc.page_content for doc in docs)
         query_source = "vector_search"
+        return {
+            "context":      context,
+            "query_source": query_source,
+            "retrieved_docs": docs,
+        }
 
+    else:
+        # Score too low — check if legal question
+        if not is_legal_question(standalone_question):
+            # completely off-topic — refuse politely
+            return {
+                "answer":       "I am a Legal Advisor AI specializing in Indian law. "
+                                "I can only answer questions related to Indian legal acts, "
+                                "rights, and court judgements. Please ask a legal question.",
+                "query_source": "out_of_scope",
+                "context":      "",
+                "retrieved_docs": [],
+            }
+
+        # legal but not in DB → web search
+        print(f"Below threshold → web search")
+        context      = web_search_fallback(standalone_question)
+        query_source = "web_search"
+        return {
+            "context":      context,
+            "query_source": query_source,
+            "retrieved_docs": [],   # no ChromaDB docs to cite
+        }
     
+def node_generate_answer(state: LegalAdvisorState) -> dict:
+    """Generate answer using LLM with correct prompt for question type."""
+    question_type     = state["question_type"]
+    context           = state["context"]
+    chat_history      = state["chat_history"]
+    original_question = state["original_question"]
 
-    # 3 pick correct system prompt based on question type
-    # escape curly braces in PDF content to prevent template injection
+    # prevention from  template injection
     safe_context = context.replace("{", "{{").replace("}", "}}")
-    system_msg = SYSTEM_PROMPTS[question_type].format(context=safe_context)
- 
+    system_msg   = SYSTEM_PROMPTS[question_type].format(context=safe_context)
 
-    # 4 build full message list: system + history + current question
+    #  system + history + current question
     messages = [("system", system_msg)]
     for msg in chat_history:
         if isinstance(msg, HumanMessage):
             messages.append(("human", msg.content))
         elif isinstance(msg, AIMessage):
             messages.append(("ai", msg.content))
-    messages.append(("human", question))
+    messages.append(("human", original_question))
 
-    # Step 5 — build chain and call LLM
     prompt = ChatPromptTemplate.from_messages(messages)
     chain  = prompt | llm | StrOutputParser()
     answer = call_with_retry(chain, {})
 
-    return answer, docs, query_source
+    return {"answer": answer}   
+def node_save_history(state: LegalAdvisorState)->dict:
+    """
+    Save the conversation history to sqlite for this session
+    """
+    session_id = state["session_id"]
+    original_question = state["original_question"]
+    answer = state["answer"]
+    save_history(session_id,original_question, answer)
+    return {}
+
+#graph definition
+def build_graph():
+    graph = StateGraph(LegalAdvisorState)
+
+    # Add all nodes
+    graph.add_node("load_history",       node_load_history)
+    graph.add_node("classify_question",  node_classify_question)
+    graph.add_node("rephrase_query",     node_rephrase_query)
+    graph.add_node("retrieve_chunks",    node_retrieve_chunks)
+    graph.add_node("check_threshold",    node_check_threshold)
+    graph.add_node("generate_answer",    node_generate_answer)
+    graph.add_node("save_history",       node_save_history)
+
+    #entry point 
+    graph.set_entry_point("load_history")
+
+    #linear edges
+    graph.add_edge("load_history",      "classify_question")
+    graph.add_edge("classify_question", "rephrase_query")
+    graph.add_edge("rephrase_query",    "retrieve_chunks")
+    graph.add_edge("retrieve_chunks",   "check_threshold")
+
+    # conditional edges from check_threshold
+    # Three possible routes:
+    # "vector_search" → generate_answer
+    # "web_search"    → generate_answer
+    # "out_of_scope"  → save_history (skip LLM entirely)
+    graph.add_conditional_edges(
+        "check_threshold",
+        lambda state: state["query_source"],
+        {
+            "vector_search":"generate_answer",
+            "web_search": "generate_answer",   
+            "out_of_scope": "save_history",
+        }
+    )
+
+    #remaining edges
+    graph.add_edge("generate_answer", "save_history")
+    graph.add_edge("save_history",    END)
+
+    return graph.compile()
+
+# Compile the graph at startup
+legal_graph = build_graph()
+
+# def answer_single_question(
+#     question: str,
+#     chat_history: list,
+#     question_type: str,
+    
+# ) -> tuple[str, list, str]:
+
+#     #trim history to prevent token overflow
+#     chat_history = trim_history_to_fit(chat_history)
+
+#     # rephrase follow-up using history (only if history exists)
+#     # Converts "Who is eligible?" → "Who is eligible for gratuity?"
+#     if chat_history:
+#         standalone = call_with_retry(rephrase_chain, {
+#            "input": question,
+#            "chat_history": chat_history,
+# })
+#         print(f"Rephrased: {standalone}")
+#     else:
+#         standalone = question
+
+#     # 2 retrieve relevant chunks from ChromaDB using rephrased question
+#     # NEW — returns (doc, score) tuples
+#     docs_with_scores = vectordb.similarity_search_with_relevance_scores(
+#     standalone, k=6
+#           )
+
+#     # separate docs and scores
+#     docs          = [doc for doc, score in docs_with_scores]
+#     # After getting docs_with_scores:
+#     highest_score = max(
+#     [max(score, 0) for doc, score in docs_with_scores],
+#     default=0)
+#     print(f"Highest similarity score: {highest_score:.3f}")
+#     context = "\n\n---\n\n".join(doc.page_content for doc in docs)
+#     SIMILARITY_THRESHOLD = 0.4
+
+#     if highest_score < SIMILARITY_THRESHOLD:
+#         if not is_legal_question(standalone):
+#             # completely off-topic — refuse politely
+#             return (
+#                 "I am a Legal Advisor AI specializing in Indian law. "
+#                 "I can only answer questions related to Indian legal acts, "
+#                 "rights, and court judgements. Please ask a legal question.",
+#                 [],
+#                 "out_of_scope"
+#             )
+#         # legal but not in DB → web search
+#         print(f" Below threshold → web search")
+#         context      = web_search_fallback(standalone)
+#         docs         = []
+#         query_source = "web_search"
+    
+#     else:
+#         print(f"✅ Score {highest_score:.3f} above threshold → using ChromaDB")
+#         context      = "\n\n---\n\n".join(doc.page_content for doc in docs)
+#         query_source = "vector_search"
+
+    
+
+#     # 3 pick correct system prompt based on question type
+#     # escape curly braces in PDF content to prevent template injection
+#     safe_context = context.replace("{", "{{").replace("}", "}}")
+#     system_msg = SYSTEM_PROMPTS[question_type].format(context=safe_context)
+ 
+
+#     # 4 build full message list: system + history + current question
+#     messages = [("system", system_msg)]
+#     for msg in chat_history:
+#         if isinstance(msg, HumanMessage):
+#             messages.append(("human", msg.content))
+#         elif isinstance(msg, AIMessage):
+#             messages.append(("ai", msg.content))
+#     messages.append(("human", question))
+
+#     # Step 5 — build chain and call LLM
+#     prompt = ChatPromptTemplate.from_messages(messages)
+#     chain  = prompt | llm | StrOutputParser()
+#     answer = call_with_retry(chain, {})
+
+#     return answer, docs, query_source
 
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    cleanup_old_sessions(days=30)    # ← called here at startup
+    cleanup_old_sessions(days=30)    #called here at startup
     yield
 # FastAPI App
 app = FastAPI(title="Legal Advisor AI", lifespan=lifespan)   
@@ -529,45 +717,31 @@ async def ask_question(req: QueryRequest):
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
     session_id   = req.session_id or str(uuid.uuid4())
-    chat_history = get_history(session_id)
-
-    # Step 1: Detect question type 
-    question_type = detect_question_type(question)
-    print(f"\nType: {question_type} | Q: {question}")
-
+    
     try:
-        # Step 2: Route to correct handler
-        if question_type == "compound":
-            # Decompose → answer each sub-question → join with divider
-            sub_questions = decompose_question(question)
-            print(f"🔀 Sub-questions: {sub_questions}")
-
-            all_answers = []
-            all_docs    = []
-            for sub_q in sub_questions:
-                ans, docs, source = answer_single_question(sub_q, chat_history, "simple")
-                all_answers.append(f"**{sub_q}**\n{ans}")
-                all_docs.extend(docs)
-
-            answer = "\n\n---\n\n".join(all_answers)
-            docs   = all_docs
-
-        else:
-            # scenario, multi_hop, simple → answer directly with correct prompt
-            answer, docs , query_source = answer_single_question(question, chat_history, question_type)
+         result = legal_graph.invoke({
+            "original_question": question,
+            "session_id":        session_id,
+            "chat_history":      [],   # graph loads this internally
+            "question_type":     "",
+            "standalone_question": "",
+            "retrieved_docs":    [],
+            "similarity_score":  0.0,
+            "context":           "",
+            "query_source":      "",
+            "answer":            "",
+        })
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
-    #  Step 3: Save to history 
-    save_history(session_id, question, answer)
 
     #  Step 4: De-duplicate sources 
     seen    = set()
     sources = []
-    for doc in docs:
+    for doc in result["retrieved_docs"]:
         meta = doc.metadata
         src  = os.path.basename(meta.get("source", "Unknown"))
         page = meta.get("page")
@@ -576,11 +750,11 @@ async def ask_question(req: QueryRequest):
             sources.append(Source(source=src, page=page))
 
     return QueryResponse(
-        answer=answer,
+        answer=result["answer"],
         sources=sources,
         session_id=session_id,
-        question_type=question_type,
-        query_source=query_source, 
+        question_type=result["question_type"],
+        query_source=result["query_source"], 
     )
 
 
