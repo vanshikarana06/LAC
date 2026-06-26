@@ -1,9 +1,6 @@
 # Environment variables — NEVER push API keys
 .env
 
-# Vector database — too large for GitHub
-data_vector_db/
-
 # SQLite session storage — user data
 session_store.db
 
