@@ -450,15 +450,10 @@ def node_rephrase_query(state: LegalAdvisorState)->dict:
             "chat_history": chat_history}
 
 def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
-    standalone = state["standalone_question"]
-    print(f"🔍 Standalone: '{standalone}'")
-    
-    docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)
-    print(f"🎯 Raw scores: {[round(score, 3) for doc, score in docs_with_scores]}")
-    
+    standalone = state["standalone_question"]    
+    docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)    
     docs          = [doc for doc, score in docs_with_scores]
     highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
-    print(f"🎯 Highest after clamping: {highest_score:.3f}")
     
     return {"retrieved_docs": docs, "similarity_score": highest_score}
 
