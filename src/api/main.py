@@ -35,8 +35,7 @@ DB_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
 DB_PATH  = os.getenv("DB_PATH", "data_vector_db")
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+HF_TOKEN   = os.getenv("HF_TOKEN", "")
 
 SIMILARITY_THRESHOLD = 0.45 
 
