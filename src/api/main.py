@@ -18,7 +18,7 @@ from langgraph.graph import StateGraph, END
 
 load_dotenv()
 
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder 
@@ -74,7 +74,10 @@ def get_working_model():
 MODEL = get_working_model()
 
 #Vector DB 
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+embeddings = HuggingFaceEndpointEmbeddings(
+    model="sentence-transformers/all-MiniLM-L6-v2",
+    huggingfacehub_api_token=os.getenv("HF_TOKEN", "")
+)
 vectordb   = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
 retriever  = vectordb.as_retriever(
     search_type="mmr",

@@ -13,7 +13,4 @@ services:
         sync: false
       - key: DB_PATH
         value: data_vector_db
-      - key: TRANSFORMERS_OFFLINE
-        value: "1"
-      - key: HF_DATASETS_OFFLINE
-        value: "1"
+     
