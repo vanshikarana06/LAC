@@ -53,7 +53,7 @@ uvicorn src.api.main:app --reload --port 8000
 ```
  
 ### 5. Open the app
-Visit: **http://localhost:8000**
+Visit: **https://legal-advisor-ai-go7g.onrender.com/**
  
 ---
  
