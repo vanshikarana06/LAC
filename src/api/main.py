@@ -29,7 +29,6 @@ import groq as groq_sdk
 import sqlite3
 from langchain_tavily import TavilySearch 
 
-# DB_SESSION_PATH = "session_store.db"
 DB_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "session_store.db")
 
 DB_PATH  = os.getenv("DB_PATH", "data_vector_db")
@@ -51,8 +50,6 @@ class LegalAdvisorState(TypedDict):
     chat_history:        list
     answer:              str
 
-
-# Auto-pick working Groq model
 def get_working_model():
     client    = groq_sdk.Groq(api_key=GROQ_KEY)
     available = [m.id for m in client.models.list().data]
@@ -110,7 +107,7 @@ DOMAINS = {
     "property":  ["property", "land", "rent", "lease", "mortgage", "house"],
     "family":    ["divorce", "marriage", "wife", "husband", "alimony", "custody"],
 }
-# ── Topic classifier — prevents off-topic web searches ───────────────────────
+#Topic classifier — prevents off-topic web searches
 LEGAL_KEYWORDS = [
     "law", "act", "legal", "court", "judge", "rights", "section",
     "punishment", "crime", "contract", "property", "marriage", "divorce",
@@ -138,16 +135,16 @@ def detect_question_type(question: str) -> str:
     """
     q = question.lower()
 
-    # Check 1: hypothetical / what-if question
+    #hypothetical / what-if question
     if any(kw in q for kw in SCENARIO_KEYWORDS):
         return "scenario"
 
-    # Check 2: spans 2+ legal domains → needs multi-hop retrieval
+    # 2+ legal domains → needs multi-hop retrieval
     matched = sum(1 for kws in DOMAINS.values() if any(kw in q for kw in kws))
     if matched >= 2:
         return "multi _hop"
 
-    # Check 3: multiple questions in one sentence
+    #multiple questions in one sentence
     compound_signals = ["and how", "and what", "also", "additionally", "as well as"]
     if any(s in q for s in compound_signals) and len(question) > 80:
         return "compound"
@@ -184,14 +181,10 @@ def decompose_question(question: str) -> list[str]:
         cleaned = re.sub(r"^\d+[\.\)]\s*", "", line).strip()
         if cleaned and len(cleaned) > 10:
             sub_questions.append(cleaned)
-    # Fallback: if decomposition fails, return original question
     return sub_questions if sub_questions else [question]
 
 #SPECIALIZED PROMPTS
 # Different prompt templates for different question types.
-# Same LLM + different instructions = significantly better answers.
-
-# For hypothetical / what-if questions
 SCENARIO_SYSTEM = """You are an expert Indian legal advisor. The user is asking a hypothetical or scenario-based legal question.
 
 Use the context below to:
@@ -207,7 +200,6 @@ NEVER invent case names, party names, or judgement years that are not in the con
 Context:
 {context}"""
 
-# For questions spanning multiple Acts
 MULTIHOP_SYSTEM = """You are an expert Indian legal advisor. This question involves multiple areas of Indian law.
 
 Use the context below to:
@@ -223,7 +215,6 @@ NEVER invent case names, party names, or judgement years that are not in the con
 Context:
 {context}"""
 
-# For simple and compound questions
 DEFAULT_SYSTEM = """You are an expert Indian legal advisor with deep knowledge of Indian law.
 
 Use ONLY the context provided below to answer the question.
@@ -238,7 +229,6 @@ NEVER invent case names, party names, or judgement years that are not in the con
 Context:
 {context}"""
 
-# Dict to look up correct prompt by question type
 SYSTEM_PROMPTS = {
     "scenario":  SCENARIO_SYSTEM,
     "multi_hop": MULTIHOP_SYSTEM,
@@ -246,8 +236,6 @@ SYSTEM_PROMPTS = {
     "simple":    DEFAULT_SYSTEM,
 }
 
-# Prompt to rephrase follow-up questions into standalone questions
-# e.g. "Who is eligible for it?" → "Who is eligible for gratuity?"
 REPHRASE_PROMPT = ChatPromptTemplate.from_messages([
     ("system", """Your ONLY job is to rephrase the follow-up question as a standalone question.
 DO NOT answer the question.
@@ -260,7 +248,6 @@ If the question is already standalone, return it exactly as-is."""),
 ])
 
 rephrase_chain = REPHRASE_PROMPT | llm | StrOutputParser()
-
 
 def call_with_retry(chain , input_data , max_retries=3):
     """" Wraps any LangChain .invoke() call with retry logic.
@@ -277,11 +264,6 @@ def call_with_retry(chain , input_data , max_retries=3):
 
                 print(f"⚠️ Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
                 time.sleep(wait_time)
-
-
-# SESSION STORE + HISTORY MANAGEMENT
-# Stores conversation history per session_id in memory.
-# trim_history_to_fit prevents token overflow on long conversations.
 
 def init_db():
     conn= sqlite3.connect(DB_SESSION_PATH)
@@ -312,10 +294,10 @@ def get_history(session_id: str) -> list:
             ORDER BY msg_time ASC
         """, (session_id,))
         
-        # 2. fetch all rows
+        #fetch all rows
         rows = cursor.fetchall()
         
-        # 3. convert each row to HumanMessage or AIMessage
+        #convert each row to HumanMessage or AIMessage
         history = []
         for _, _, msg_type, msg_content, _ in rows:
             if msg_type == "human":
@@ -326,19 +308,17 @@ def get_history(session_id: str) -> list:
         return history
 
     finally:
-        # 4. close connection (finally ensures this runs even if an error happens)
+        #close connection (finally ensures this runs even if an error happens)
         conn.close()
     
 def save_history(session_id: str, human: str, ai: str):
     conn = sqlite3.connect(DB_SESSION_PATH)
     try:
         cursor = conn.cursor()
-        # YOUR TASK:
         cursor.execute("""INSERT INTO messages (session_id, msg_type, msg_content, msg_time)
-        VALUES (?, ?, ?, ?)""", (session_id, "human", human, time.time())) # VALUES ();
+        VALUES (?, ?, ?, ?)""", (session_id, "human", human, time.time()))
         cursor.execute("""INSERT INTO messages (session_id, msg_type, msg_content, msg_time)
-        VALUES (?, ?, ?, ?)""", (session_id, "ai", ai, time.time())) # VALUES ();
-        # commit
+        VALUES (?, ?, ?, ?)""", (session_id, "ai", ai, time.time())) 
         conn.commit()  #Without commit()  data sits in buffer in  ram 
 
     finally:
@@ -374,10 +354,8 @@ def trim_history_to_fit(chat_history: list, max_history_tokens: int = 1500) -> l
         estimated_tokens = total_chars // 4
         if estimated_tokens <= max_history_tokens:
             break
-        # Remove oldest human+AI pair
         chat_history = chat_history[2:]
     return chat_history
-
 
 # Flow: trim history → rephrase → retrieve → build prompt → call LLM
  
@@ -559,12 +537,6 @@ def build_graph():
     graph.add_edge("classify_question", "rephrase_query")
     graph.add_edge("rephrase_query",    "retrieve_chunks")
     graph.add_edge("retrieve_chunks",   "check_threshold")
-
-    # conditional edges from check_threshold
-    # Three possible routes:
-    # "vector_search" → generate_answer
-    # "web_search"    → generate_answer
-    # "out_of_scope"  → save_history (skip LLM entirely)
     graph.add_conditional_edges(
         "check_threshold",
         lambda state: state["query_source"],
@@ -574,14 +546,10 @@ def build_graph():
             "out_of_scope": "save_history",
         }
     )
-
-    #remaining edges
     graph.add_edge("generate_answer", "save_history")
     graph.add_edge("save_history",    END)
 
     return graph.compile()
-
-# Compile the graph at startup
 legal_graph = build_graph()
 
 # def answer_single_question(
@@ -666,8 +634,6 @@ legal_graph = build_graph()
 
 #     return answer, docs, query_source
 
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -706,7 +672,6 @@ class QueryResponse(BaseModel):
 async def root():
     return FileResponse("static/index.html")
 
-
 @app.post("/ask", response_model=QueryResponse)
 async def ask_question(req: QueryRequest):
     question = req.question.strip()
@@ -735,7 +700,7 @@ async def ask_question(req: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-    #  Step 4: De-duplicate sources 
+    #De-duplicate sources 
     seen    = set()
     sources = []
     for doc in result["retrieved_docs"]:
