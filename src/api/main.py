@@ -36,7 +36,7 @@ GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN   = os.getenv("HF_TOKEN", "")
 
-SIMILARITY_THRESHOLD = 0.45 
+SIMILARITY_THRESHOLD = 0.35 
 
 class LegalAdvisorState(TypedDict):
     original_question:   str
