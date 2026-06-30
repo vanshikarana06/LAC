@@ -29,12 +29,16 @@ import groq as groq_sdk
 import sqlite3
 from langchain_tavily import TavilySearch 
 
+import json
+from fastapi.responses import StreamingResponse 
+
 DB_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "session_store.db")
 
 DB_PATH  = os.getenv("DB_PATH", "data_vector_db")
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN   = os.getenv("HF_TOKEN", "")
+os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN 
 
 SIMILARITY_THRESHOLD = 0.35 
 
@@ -268,7 +272,6 @@ def call_with_retry(chain , input_data , max_retries=3):
 def init_db():
     conn= sqlite3.connect(DB_SESSION_PATH)
     cursor= conn.cursor()
-    # Use triple quotes for multi-line SQL strings
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS messages (
         id          INTEGER  PRIMARY KEY AUTOINCREMENT,
@@ -552,88 +555,6 @@ def build_graph():
     return graph.compile()
 legal_graph = build_graph()
 
-# def answer_single_question(
-#     question: str,
-#     chat_history: list,
-#     question_type: str,
-    
-# ) -> tuple[str, list, str]:
-
-#     #trim history to prevent token overflow
-#     chat_history = trim_history_to_fit(chat_history)
-
-#     # rephrase follow-up using history (only if history exists)
-#     # Converts "Who is eligible?" → "Who is eligible for gratuity?"
-#     if chat_history:
-#         standalone = call_with_retry(rephrase_chain, {
-#            "input": question,
-#            "chat_history": chat_history,
-# })
-#         print(f"Rephrased: {standalone}")
-#     else:
-#         standalone = question
-
-#     # 2 retrieve relevant chunks from ChromaDB using rephrased question
-#     # NEW — returns (doc, score) tuples
-#     docs_with_scores = vectordb.similarity_search_with_relevance_scores(
-#     standalone, k=6
-#           )
-
-#     # separate docs and scores
-#     docs          = [doc for doc, score in docs_with_scores]
-#     # After getting docs_with_scores:
-#     highest_score = max(
-#     [max(score, 0) for doc, score in docs_with_scores],
-#     default=0)
-#     print(f"Highest similarity score: {highest_score:.3f}")
-#     context = "\n\n---\n\n".join(doc.page_content for doc in docs)
-#     SIMILARITY_THRESHOLD = 0.4
-
-#     if highest_score < SIMILARITY_THRESHOLD:
-#         if not is_legal_question(standalone):
-#             # completely off-topic — refuse politely
-#             return (
-#                 "I am a Legal Advisor AI specializing in Indian law. "
-#                 "I can only answer questions related to Indian legal acts, "
-#                 "rights, and court judgements. Please ask a legal question.",
-#                 [],
-#                 "out_of_scope"
-#             )
-#         # legal but not in DB → web search
-#         print(f" Below threshold → web search")
-#         context      = web_search_fallback(standalone)
-#         docs         = []
-#         query_source = "web_search"
-    
-#     else:
-#         print(f"✅ Score {highest_score:.3f} above threshold → using ChromaDB")
-#         context      = "\n\n---\n\n".join(doc.page_content for doc in docs)
-#         query_source = "vector_search"
-
-    
-
-#     # 3 pick correct system prompt based on question type
-#     # escape curly braces in PDF content to prevent template injection
-#     safe_context = context.replace("{", "{{").replace("}", "}}")
-#     system_msg = SYSTEM_PROMPTS[question_type].format(context=safe_context)
- 
-
-#     # 4 build full message list: system + history + current question
-#     messages = [("system", system_msg)]
-#     for msg in chat_history:
-#         if isinstance(msg, HumanMessage):
-#             messages.append(("human", msg.content))
-#         elif isinstance(msg, AIMessage):
-#             messages.append(("ai", msg.content))
-#     messages.append(("human", question))
-
-#     # Step 5 — build chain and call LLM
-#     prompt = ChatPromptTemplate.from_messages(messages)
-#     chain  = prompt | llm | StrOutputParser()
-#     answer = call_with_retry(chain, {})
-
-#     return answer, docs, query_source
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -718,6 +639,81 @@ async def ask_question(req: QueryRequest):
         question_type=result["question_type"],
         query_source=result["query_source"], 
     )
+
+@app.get("/ask/stream")
+async def ask_stream(question : str, session_id : Optional[str] = None):
+    session_id = session_id or str(uuid.uuid4())
+    chat_history= get_history(session_id)
+
+    async def generate():
+        question_type= detect_question_type(question)
+        chat_history_trim = trim_history_to_fit(chat_history)
+        if chat_history_trim :
+            standalone= call_with_retry(
+                rephrase_chain,
+                {
+                    "input": question,
+                    "chat_history": chat_history_trim,
+                }
+            )
+        else :
+            standalone = question
+
+        docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)
+        docs = [doc for doc, _ in docs_with_scores]
+        highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
+            
+        if highest_score >= SIMILARITY_THRESHOLD:
+            context= "\n\n---\n\n".join(doc.page_content for doc in docs)
+            query_source = "vector_search"
+        else :
+            if not is_legal_question(standalone):
+                context = "I am a Legal Advisor AI specializing in Indian law. I can only answer questions related to Indian legal acts, rights, and court judgements. Please ask a legal question."
+                query_source = "out_of_scope"
+                docs=[]
+            else:
+                context = web_search_fallback(standalone)
+                query_source = "web_search"
+                docs= []
+        safe_context = context.replace("{", "{{").replace("}", "}}")
+        system_msg   = SYSTEM_PROMPTS[question_type].format(context=safe_context)
+
+        messages = [("system", system_msg)]
+        for msg in chat_history_trim:
+            if isinstance(msg, HumanMessage):
+                messages.append(("human", msg.content))
+            elif isinstance(msg, AIMessage):
+                messages.append(("ai", msg.content))
+        messages.append(("human", question))
+
+        prompt = ChatPromptTemplate.from_messages(messages)
+        chain  = prompt | llm | StrOutputParser()
+        yield f"data: {json.dumps({'type': 'meta', 'session_id': session_id, 'question_type': question_type, 'query_source': query_source})}\n\n"
+        full_answer = ""
+        for token in chain.stream({}):
+            full_answer += token
+             # send token to browser in SSE format
+            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+        seen    = set()
+        sources = []
+        for doc in docs:
+            meta = doc.metadata
+            src  = os.path.basename(meta.get("source", "Unknown"))
+            page = meta.get("page")
+            if (src, page) not in seen:
+                seen.add((src, page))
+                sources.append({"source": src, "page": page})
+        
+        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+
+        save_history(session_id ,question , full_answer)
+        yield "data: [DONE]\n\n"
+       
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+
 
 
 @app.delete("/session/{session_id}")
