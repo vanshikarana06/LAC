@@ -13,7 +13,7 @@ langchain-chroma
 chromadb
 sentence-transformers
 pypdf
-huggingface-hub
+huggingface_hub==0.34.0
 tavily-python 
 langchain-tavily
 
