@@ -39,6 +39,21 @@ GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN   = os.getenv("HF_TOKEN", "")
 os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN 
+# In main.py — change embeddings based on environment
+import platform
+
+if os.getenv("RENDER"):  # Render sets this automatically
+    # Production — use API embeddings (saves RAM)
+    from langchain_huggingface import HuggingFaceEndpointEmbeddings
+    embeddings = HuggingFaceEndpointEmbeddings(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        huggingfacehub_api_token=HF_TOKEN
+    )
+else:
+    # Local development — use local embeddings (no API needed)
+    from langchain_huggingface import HuggingFaceEmbeddings
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
 
 SIMILARITY_THRESHOLD = 0.35 
 
@@ -73,10 +88,16 @@ def get_working_model():
 
 MODEL = get_working_model()
 
-#Vector DB 
+# #Vector DB 
+# embeddings = HuggingFaceEndpointEmbeddings(
+#     model="sentence-transformers/all-MiniLM-L6-v2",
+#     huggingfacehub_api_token=os.getenv("HF_TOKEN", "")
+# )
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
+
 embeddings = HuggingFaceEndpointEmbeddings(
     model="sentence-transformers/all-MiniLM-L6-v2",
-    huggingfacehub_api_token=os.getenv("HF_TOKEN", "")
+    huggingfacehub_api_token=HF_TOKEN
 )
 vectordb   = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
 retriever  = vectordb.as_retriever(

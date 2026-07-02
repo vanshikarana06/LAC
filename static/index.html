@@ -691,6 +691,23 @@
         win.scrollTop = win.scrollHeight;
       }
 
+      function addStreamingBubble() {
+    document.getElementById("welcome")?.remove();
+    const win = document.getElementById("chatWindow");
+    const div = document.createElement("div");
+    div.className = "msg ai";
+    div.innerHTML = `
+        <div class="msg-avatar">⚖️</div>
+        <div class="msg-body">
+            <div class="badges"></div>
+            <div class="bubble streaming-bubble"></div>
+            <div class="sources-container"></div>
+        </div>`;
+    win.appendChild(div);
+    win.scrollTop = win.scrollHeight;
+    return div;
+}
+
       function formatAnswer(text) {
         return text
           .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
