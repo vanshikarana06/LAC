@@ -440,6 +440,9 @@
         text-align: center;
         padding: 4px 0;
       }
+      .streaming-bubble {
+    min-height: 24px;
+}
       @media (max-width: 768px) {
         .app {
           grid-template-columns: 1fr;
@@ -691,7 +694,8 @@
         win.scrollTop = win.scrollHeight;
       }
 
-      function addStreamingBubble() {
+      // Creates an empty AI bubble immediately — fills up as tokens arrive
+function addStreamingBubble() {
     document.getElementById("welcome")?.remove();
     const win = document.getElementById("chatWindow");
     const div = document.createElement("div");
@@ -700,12 +704,46 @@
         <div class="msg-avatar">⚖️</div>
         <div class="msg-body">
             <div class="badges"></div>
-            <div class="bubble streaming-bubble"></div>
+            <div class="bubble streaming-bubble">▋</div>
             <div class="sources-container"></div>
         </div>`;
     win.appendChild(div);
     win.scrollTop = win.scrollHeight;
-    return div;
+    return div;   // return reference so we can update it later
+}
+
+// Updates bubble content as each token arrives
+function updateStreamingBubble(div, text) {
+    const bubble = div.querySelector(".streaming-bubble");
+    bubble.innerHTML = formatAnswer(text) + '<span style="color:var(--gold)">▋</span>';
+    const win = document.getElementById("chatWindow");
+    win.scrollTop = win.scrollHeight;
+}
+
+// Adds type + source badges after meta arrives
+function addStreamBadges(div, qtype, qsource) {
+    const badges = div.querySelector(".badges");
+    if (qtype && TYPE_LABELS[qtype]) {
+        const t = TYPE_LABELS[qtype];
+        badges.innerHTML += `<div class="qtype-badge ${t.cls}" style="margin-bottom:8px">${t.label}</div>`;
+    }
+    if (qsource && SOURCE_LABELS[qsource]) {
+        const s = SOURCE_LABELS[qsource];
+        badges.innerHTML += `<div class="qtype-badge ${s.cls}" style="margin-bottom:8px">${s.label}</div>`;
+    }
+}
+
+// Adds source citations after streaming completes
+function addStreamSources(div, sources) {
+    const bubble = div.querySelector(".streaming-bubble");
+    // Remove blinking cursor when done
+    bubble.innerHTML = bubble.innerHTML.replace('<span style="color:var(--gold)">▋</span>', '');
+    
+    if (!sources.length) return;
+    const container = div.querySelector(".sources-container");
+    container.innerHTML = `<div class="sources">${sources.map(s =>
+        `<span class="source-tag">📄 ${s.source}${s.page != null ? " · p."+(s.page+1) : ""}</span>`
+    ).join("")}</div>`;
 }
 
       function formatAnswer(text) {
@@ -715,63 +753,147 @@
           .replace(/\n/g, "<br>");
       }
 
+      // async function sendQuestion() {
+      //   if (loading) return;
+      //   const input = document.getElementById("questionInput");
+      //   const question = input.value.trim();
+      //   if (!question) return;
+
+      //   input.value = "";
+      //   autoResize(input);
+      //   loading = true;
+      //   document.getElementById("sendBtn").disabled = true;
+
+      //   addMessage("user", question);
+      //   addTyping();
+
+      //   try {
+      //     const resp = await fetch(`${API}/ask`, {
+      //       method: "POST",
+      //       headers: { "Content-Type": "application/json" },
+      //       body: JSON.stringify({ question, session_id: sessionId }),
+      //     });
+
+      //     document.getElementById("typing")?.remove();
+
+      //     if (!resp.ok) {
+      //       const err = await resp.json();
+      //       addMessage(
+      //         "ai",
+      //         `<span style="color:var(--red)">Error: ${err.detail}</span>`,
+      //       );
+      //     } else {
+      //       const data = await resp.json();
+      //       sessionId = data.session_id;
+      //       // save to browser disk so it survives page refresh
+      //       localStorage.setItem("legal_advisor_session", data.session_id);
+      //       msgCount++;
+      //       document.getElementById("historyCount").textContent =
+      //         `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
+      //       addMessage(
+      //         "ai",
+      //         formatAnswer(data.answer),
+      //         data.sources,
+      //         data.question_type,
+      //         data.query_source  
+      //       );
+      //     }
+      //   } catch {
+      //     document.getElementById("typing")?.remove();
+      //     addMessage(
+      //       "ai",
+      //       '<span style="color:var(--red)">Could not reach the server.</span>',
+      //     );
+      //   } finally {
+      //     loading = false;
+      //     document.getElementById("sendBtn").disabled = false;
+      //     input.focus();
+      //   }
+      // }
+
       async function sendQuestion() {
-        if (loading) return;
-        const input = document.getElementById("questionInput");
-        const question = input.value.trim();
-        if (!question) return;
+    if (loading) return;
+    const input    = document.getElementById("questionInput");
+    const question = input.value.trim();
+    if (!question) return;
 
-        input.value = "";
-        autoResize(input);
-        loading = true;
-        document.getElementById("sendBtn").disabled = true;
+    input.value = ""; autoResize(input);
+    loading = true;
+    document.getElementById("sendBtn").disabled = true;
 
-        addMessage("user", question);
-        addTyping();
+    addMessage("user", question);
+    
+    // Create empty AI bubble immediately — no waiting
+    const aiDiv = addStreamingBubble();
 
-        try {
-          const resp = await fetch(`${API}/ask`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ question, session_id: sessionId }),
-          });
+    try {
+        // Build URL with query params for GET request
+        const params = new URLSearchParams({ question });
+        if (sessionId) params.append("session_id", sessionId);
 
-          document.getElementById("typing")?.remove();
+        const resp    = await fetch(`${API}/ask/stream?${params}`);
+        const reader  = resp.body.getReader();
+        const decoder = new TextDecoder();
 
-          if (!resp.ok) {
-            const err = await resp.json();
-            addMessage(
-              "ai",
-              `<span style="color:var(--red)">Error: ${err.detail}</span>`,
-            );
-          } else {
-            const data = await resp.json();
-            sessionId = data.session_id;
-            // save to browser disk so it survives page refresh
-            localStorage.setItem("legal_advisor_session", data.session_id);
-            msgCount++;
-            document.getElementById("historyCount").textContent =
-              `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
-            addMessage(
-              "ai",
-              formatAnswer(data.answer),
-              data.sources,
-              data.question_type,
-              data.query_source  
-            );
-          }
-        } catch {
-          document.getElementById("typing")?.remove();
-          addMessage(
-            "ai",
-            '<span style="color:var(--red)">Could not reach the server.</span>',
-          );
-        } finally {
-          loading = false;
-          document.getElementById("sendBtn").disabled = false;
-          input.focus();
+        let buffer     = "";
+        let fullAnswer = "";
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Decode chunk and add to buffer
+            buffer += decoder.decode(value, { stream: true });
+            
+            // Split by double newline (SSE message separator)
+            const lines = buffer.split("\n\n");
+            buffer = lines.pop();  // keep incomplete last chunk
+
+            for (const line of lines) {
+                if (!line.startsWith("data: ")) continue;
+                const raw = line.slice(6).trim();
+                if (raw === "[DONE]") break;
+
+                try {
+                    const msg = JSON.parse(raw);
+
+                    if (msg.type === "token") {
+                        // New token arrived — append and update bubble
+                        fullAnswer += msg.content;
+                        updateStreamingBubble(aiDiv, fullAnswer);
+                    }
+                    else if (msg.type === "meta") {
+                        // Metadata arrived — update session + show badges
+                        sessionId = msg.session_id;
+                        localStorage.setItem("legal_advisor_session", msg.session_id);
+                        msgCount++;
+                        document.getElementById("historyCount").textContent =
+                            `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
+                        addStreamBadges(aiDiv, msg.question_type, msg.query_source);
+                    }
+                    else if (msg.type === "sources") {
+                        // Sources arrived — show citations
+                        addStreamSources(aiDiv, msg.sources);
+                    }
+                    else if (msg.type === "error") {
+                        updateStreamingBubble(aiDiv, 
+                            `<span style="color:var(--red)">Error: ${msg.content}</span>`);
+                    }
+                } catch(e) {
+                    // Skip malformed JSON chunks
+                }
+            }
         }
-      }
+
+    } catch(e) {
+        updateStreamingBubble(aiDiv,
+            '<span style="color:var(--red)">Could not reach the server.</span>');
+    } finally {
+        loading = false;
+        document.getElementById("sendBtn").disabled = false;
+        input.focus();
+    }
+}
 
       function handleKey(e) {
         if (e.key === "Enter" && !e.shiftKey) {
