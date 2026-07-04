@@ -167,7 +167,7 @@ def detect_question_type(question: str) -> str:
     # 2+ legal domains → needs multi-hop retrieval
     matched = sum(1 for kws in DOMAINS.values() if any(kw in q for kw in kws))
     if matched >= 2:
-        return "multi _hop"
+        return "multi_hop"
 
     #multiple questions in one sentence
     compound_signals = ["and how", "and what", "also", "additionally", "as well as"]
