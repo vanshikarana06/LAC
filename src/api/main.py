@@ -670,79 +670,80 @@ async def ask_question(req: QueryRequest):
         query_source=result["query_source"], 
     )
 
-@app.get("/ask/stream")
-async def ask_stream(question : str, session_id : Optional[str] = None):
-    session_id = session_id or str(uuid.uuid4())
-    chat_history= get_history(session_id)
+# @app.get("/ask/stream")
+# async def ask_stream(question : str, session_id : Optional[str] = None):
+#     session_id = session_id or str(uuid.uuid4())
+#     chat_history= get_history(session_id)
 
-    async def generate():
-        question_type= detect_question_type(question)
-        print(f"DEBUG question_type: repr='{repr(question_type)}'")  # ← add this
+#     async def generate():
+#         question_type= detect_question_type(question)
+#         print(f"DEBUG question_type: repr='{repr(question_type)}'")  # ← add this
 
-        chat_history_trim = trim_history_to_fit(chat_history)
-        if chat_history_trim :
-            standalone= call_with_retry(
-                rephrase_chain,
-                {
-                    "input": question,
-                    "chat_history": chat_history_trim,
-                }
-            )
-        else :
-            standalone = question
+#         chat_history_trim = trim_history_to_fit(chat_history)
+#         if chat_history_trim :
+#             standalone= call_with_retry(
+#                 rephrase_chain,
+#                 {
+#                     "input": question,
+#                     "chat_history": chat_history_trim,
+#                 }
+#             )
+#         else :
+#             standalone = question
 
-        docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)
-        docs = [doc for doc, _ in docs_with_scores]
-        highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
+#         docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)
+#         docs = [doc for doc, _ in docs_with_scores]
+#         highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
             
-        if highest_score >= SIMILARITY_THRESHOLD:
-            context= "\n\n---\n\n".join(doc.page_content for doc in docs)
-            query_source = "vector_search"
-        else :
-            if not is_legal_question(standalone):
-                context = "I am a Legal Advisor AI specializing in Indian law. I can only answer questions related to Indian legal acts, rights, and court judgements. Please ask a legal question."
-                query_source = "out_of_scope"
-                docs=[]
-            else:
-                context = web_search_fallback(standalone)
-                query_source = "web_search"
-                docs= []
-        safe_context = context.replace("{", "{{").replace("}", "}}")
-        system_msg   = SYSTEM_PROMPTS[question_type].format(context=safe_context)
+#         if highest_score >= SIMILARITY_THRESHOLD:
+#             context= "\n\n---\n\n".join(doc.page_content for doc in docs)
+#             query_source = "vector_search"
+#         else :
+#             if not is_legal_question(standalone):
+#                 context = "I am a Legal Advisor AI specializing in Indian law. I can only answer questions related to Indian legal acts, rights, and court judgements. Please ask a legal question."
+#                 query_source = "out_of_scope"
+#                 docs=[]
+#             else:
+#                 context = web_search_fallback(standalone)
+#                 query_source = "web_search"
+#                 docs= []
+#         safe_context = context.replace("{", "{{").replace("}", "}}")
 
-        messages = [("system", system_msg)]
-        for msg in chat_history_trim:
-            if isinstance(msg, HumanMessage):
-                messages.append(("human", msg.content))
-            elif isinstance(msg, AIMessage):
-                messages.append(("ai", msg.content))
-        messages.append(("human", question))
+#         system_msg   = SYSTEM_PROMPTS[question_type].format(context=safe_context)
 
-        prompt = ChatPromptTemplate.from_messages(messages)
-        chain  = prompt | llm | StrOutputParser()
-        yield f"data: {json.dumps({'type': 'meta', 'session_id': session_id, 'question_type': question_type, 'query_source': query_source})}\n\n"
-        full_answer = ""
-        for token in chain.stream({}):
-            full_answer += token
-             # send token to browser in SSE format
-            yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
-        seen    = set()
-        sources = []
-        for doc in docs:
-            meta = doc.metadata
-            src  = os.path.basename(meta.get("source", "Unknown"))
-            page = meta.get("page")
-            if (src, page) not in seen:
-                seen.add((src, page))
-                sources.append({"source": src, "page": page})
+#         messages = [("system", system_msg)]
+#         for msg in chat_history_trim:
+#             if isinstance(msg, HumanMessage):
+#                 messages.append(("human", msg.content))
+#             elif isinstance(msg, AIMessage):
+#                 messages.append(("ai", msg.content))
+#         messages.append(("human", question))
+
+#         prompt = ChatPromptTemplate.from_messages(messages)
+#         chain  = prompt | llm | StrOutputParser()
+#         yield f"data: {json.dumps({'type': 'meta', 'session_id': session_id, 'question_type': question_type, 'query_source': query_source})}\n\n"
+#         full_answer = ""
+#         for token in chain.stream({}):
+#             full_answer += token
+#              # send token to browser in SSE format
+#             yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+#         seen    = set()
+#         sources = []
+#         for doc in docs:
+#             meta = doc.metadata
+#             src  = os.path.basename(meta.get("source", "Unknown"))
+#             page = meta.get("page")
+#             if (src, page) not in seen:
+#                 seen.add((src, page))
+#                 sources.append({"source": src, "page": page})
         
-        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+#         yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
 
-        save_history(session_id ,question , full_answer)
-        yield "data: [DONE]\n\n"
+#         save_history(session_id ,question , full_answer)
+#         yield "data: [DONE]\n\n"
        
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+#     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 
@@ -759,6 +760,38 @@ async def clear_session(session_id: str):
     finally:
         conn.close()
     return {"cleared": session_id}
+
+@app.get("/ask/stream")
+async def ask_stream(question: str, session_id: Optional[str] = None):
+    session_id = session_id or str(uuid.uuid4())
+    
+    async def generate():
+        # Initialize the state that your Graph expects
+        state = {
+            "original_question": question,
+            "session_id": session_id,
+            "chat_history": get_history(session_id)
+        }
+
+        # Use astream_events to stream the graph execution
+        # This will pipe every node's output to the browser automatically
+        async for event in legal_graph.astream_events(state, version="v2"):
+            kind = event["event"]
+            
+            # 1. Stream tokens as they are generated by the 'generate_answer' node
+            if kind == "on_chat_model_stream":
+                content = event["data"]["chunk"].content
+                if content:
+                    yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+            
+            # 2. You can also stream 'node' starts to show status to the user
+            elif kind == "on_chain_start":
+                node_name = event["name"]
+                yield f"data: {json.dumps({'type': 'status', 'node': node_name})}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.get("/health")
