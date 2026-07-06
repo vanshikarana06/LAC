@@ -423,7 +423,6 @@ def web_search_fallback(question: str) -> str:
     return results_text
     
 # langraph nodes
-@traceable(name="load_history", description="load history from sqlite")
 def node_load_history(state: LegalAdvisorState)->dict:
     """
     Load the conversation history from sqlite for this session
@@ -431,14 +430,12 @@ def node_load_history(state: LegalAdvisorState)->dict:
     session_id = state["session_id"]
     history = get_history(session_id)
     return {"chat_history": history}
-@traceable(name="classify_question", description="classify the question type")
 def node_classify_question(state: LegalAdvisorState)->dict:
     """
     Classify the question type
     """
     question_type = detect_question_type(state["original_question"])
     return {"question_type": question_type}
-@traceable(name="rephrase_query", description="rephrase the question using conversation history")
 def node_rephrase_query(state: LegalAdvisorState)->dict:
     """
     Rephrase the question using the conversation history
@@ -458,7 +455,6 @@ def node_rephrase_query(state: LegalAdvisorState)->dict:
     return {"standalone_question": standalone,
             "chat_history": chat_history}
 
-@traceable(name="retrieve_chunks", description="retrieve relevant document chunks")
 def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
     standalone = state["standalone_question"]    
     docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)    
@@ -467,7 +463,6 @@ def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
     
     return {"retrieved_docs": docs, "similarity_score": highest_score}
 
-@traceable(name="check_threshold", description="check similarity score and route to correct source")
 def node_check_threshold(state: LegalAdvisorState) -> dict:
     """
     Check similarity score and route to correct source:
@@ -512,7 +507,6 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
             "retrieved_docs": [],   # no ChromaDB docs to cite
         }
     
-@traceable(name="generate_answer", description="generate answer using LLM with correct prompt for question type")
 def node_generate_answer(state: LegalAdvisorState) -> dict:
     """Generate answer using LLM with correct prompt for question type."""
     question_type     = state["question_type"]
@@ -538,7 +532,6 @@ def node_generate_answer(state: LegalAdvisorState) -> dict:
     answer = call_with_retry(chain, {})
 
     return {"answer": answer}   
-@traceable(name="save_history", description="save conversation history to sqlite")
 def node_save_history(state: LegalAdvisorState)->dict:
     """
     Save the conversation history to sqlite for this session
