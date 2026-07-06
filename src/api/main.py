@@ -631,7 +631,7 @@ async def ask_question(req: QueryRequest):
     session_id   = req.session_id or str(uuid.uuid4())
     
     try:
-         result = legal_graph.invoke({
+         result = run_legal_advisor({
             "original_question": question,
             "session_id":        session_id,
             "chat_history":      [],   # graph loads this internally
