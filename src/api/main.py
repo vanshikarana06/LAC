@@ -668,6 +668,8 @@ async def ask_stream(question : str, session_id : Optional[str] = None):
 
     async def generate():
         question_type= detect_question_type(question)
+        print(f"DEBUG question_type: repr='{repr(question_type)}'")  # ← add this
+
         chat_history_trim = trim_history_to_fit(chat_history)
         if chat_history_trim :
             standalone= call_with_retry(
