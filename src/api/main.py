@@ -578,6 +578,12 @@ def build_graph():
     return graph.compile()
 legal_graph = build_graph()
 
+@traceable(name="Legal Advisor Graph")
+def run_legal_advisor(state):
+    # This tells LangGraph to use your wrapper as the "parent" 
+    # and not create its own separate trace for the inner parts.
+    return legal_graph.invoke(state, {"run_name": "Legal Advisor Graph"})
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
