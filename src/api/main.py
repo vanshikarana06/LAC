@@ -1,3 +1,7 @@
+import sys
+# Force stdout to flush immediately so you can see logs in Render
+sys.stdout.reconfigure(line_buffering=True)
+print("DEBUG: API File Loaded Successfully")
 from contextlib import asynccontextmanager
 import os
 import re
@@ -15,9 +19,6 @@ from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage
 import operator
 from langgraph.graph import StateGraph, END
-
-load_dotenv()
-
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_chroma import Chroma
 from langchain_groq import ChatGroq
@@ -34,28 +35,15 @@ from fastapi.responses import StreamingResponse
 
 from langsmith import traceable
 
+load_dotenv()
+
 DB_SESSION_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "session_store.db")
 
-DB_PATH  = os.getenv("DB_PATH", "data_vector_db")
+DB_PATH  = os.getenv("DB_PATH", "data_vector_db") 
 GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN   = os.getenv("HF_TOKEN", "")
 os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN 
-# In main.py — change embeddings based on environment
-import platform
-
-if os.getenv("RENDER"):  # Render sets this automatically
-    # Production — use API embeddings (saves RAM)
-    from langchain_huggingface import HuggingFaceEndpointEmbeddings
-    embeddings = HuggingFaceEndpointEmbeddings(
-        model="sentence-transformers/all-MiniLM-L6-v2",
-        huggingfacehub_api_token=HF_TOKEN
-    )
-else:
-    # Local development — use local embeddings (no API needed)
-    from langchain_huggingface import HuggingFaceEmbeddings
-    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-
 
 SIMILARITY_THRESHOLD = 0.35 
 
@@ -90,22 +78,13 @@ def get_working_model():
 
 MODEL = get_working_model()
 
-# #Vector DB 
-# embeddings = HuggingFaceEndpointEmbeddings(
-#     model="sentence-transformers/all-MiniLM-L6-v2",
-#     huggingfacehub_api_token=os.getenv("HF_TOKEN", "")
-# )
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 embeddings = HuggingFaceEndpointEmbeddings(
     model="sentence-transformers/all-MiniLM-L6-v2",
     huggingfacehub_api_token=HF_TOKEN
 )
-vectordb   = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
-retriever  = vectordb.as_retriever(
-    search_type="mmr",
-    search_kwargs={"k": 6, "fetch_k": 15}   
-)
+
 
 # LLM 
 llm = ChatGroq(
@@ -456,7 +435,18 @@ def node_rephrase_query(state: LegalAdvisorState)->dict:
             "chat_history": chat_history}
 
 def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
-    standalone = state["standalone_question"]    
+    global vectordb
+    
+    if vectordb is None:
+        raise Exception("VectorDB is not initialized. Cannot retrieve chunks.")
+    
+    # Create the retriever inside the node
+    retriever = vectordb.as_retriever(
+        search_type="mmr",
+        search_kwargs={"k": 6, "fetch_k": 15}
+    )
+    standalone = state["standalone_question"]  
+    docs = retriever.invoke(standalone)  
     docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)    
     docs          = [doc for doc, score in docs_with_scores]
     highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
@@ -587,8 +577,39 @@ def run_legal_advisor(state):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    cleanup_old_sessions(days=30)    #called here at startup
-    yield
+    cleanup_old_sessions(days=30)
+
+    #  Initialize global resources
+    global embeddings, vectordb, retriever
+
+    # Embeddings — environment aware
+    if os.getenv("RENDER"):
+        from langchain_huggingface import HuggingFaceEndpointEmbeddings
+        embeddings = HuggingFaceEndpointEmbeddings(
+            model="sentence-transformers/all-MiniLM-L6-v2",
+            huggingfacehub_api_token=HF_TOKEN   # use module-level constant
+        )
+        print("Using HuggingFace Endpoint Embeddings (API)")
+    else:
+        from langchain_huggingface import HuggingFaceEmbeddings
+        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        print("Using local HuggingFace Embeddings")
+
+    try:
+        vectordb  = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
+        retriever = vectordb.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 6, "fetch_k": 15}
+        )
+        print(f"ChromaDB loaded: {vectordb._collection.count()} chunks")
+    except Exception as e:
+        print(f"CRITICAL: Failed to initialize ChromaDB: {e}")
+        vectordb  = None
+        retriever = None
+
+    yield   # ← server handles requests here
+    print("Server shutting down cleanly.")
+
 # FastAPI App
 app = FastAPI(title="Legal Advisor AI", lifespan=lifespan)   
 
@@ -746,8 +767,6 @@ async def ask_question(req: QueryRequest):
 
 
 
-
-
 @app.delete("/session/{session_id}")
 async def clear_session(session_id: str):
     """Clear chat history — called when user clicks New Chat."""
@@ -756,12 +775,15 @@ async def clear_session(session_id: str):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         conn.commit()
+        return {"status": "success", "cleared": session_id}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
-    return {"cleared": session_id}
 
 @app.get("/ask/stream")
 async def ask_stream(question: str, session_id: Optional[str] = None):
+    print(f"DEBUG: Entering ask_stream for question: {question}")
     session_id = session_id or str(uuid.uuid4())
     
     async def generate():
@@ -769,7 +791,7 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
         state = {
             "original_question": question,
             "session_id": session_id,
-            "chat_history": get_history(session_id),
+            "chat_history": [],
             "question_type": "",
             "standalone_question": "",
             "retrieved_docs": [],
@@ -805,7 +827,8 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
                     yield f"data: {json.dumps({'type': 'metadata_update', 'query_source': output['query_source']})}\n\n"
                 
                 # Keep state updated for final source extraction
-                state.update(output)
+                if isinstance(output, dict):
+                 state.update(output)
 
         # 3. Stream Sources (at the end)
         final_docs = state.get("retrieved_docs", [])
@@ -827,6 +850,8 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
 
 @app.get("/health")
 async def health():
+    count = vectordb._collection.count() if vectordb else 0
+
     return {
         "status":          "ok",
         "docs_in_db":      vectordb._collection.count(),
@@ -836,6 +861,8 @@ async def health():
 
 @app.get("/acts")
 async def list_acts():
+    if not vectordb:
+        return {"acts": []}
     all_meta = vectordb._collection.get(include=["metadatas"])["metadatas"]
     acts = sorted({os.path.basename(m.get("source", "")) for m in all_meta if m})
     return {"acts": acts}
