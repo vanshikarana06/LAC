@@ -811,6 +811,7 @@ function addStreamSources(div, sources) {
       //   }
       // }
 
+
       async function sendQuestion() {
     if (loading) return;
     const input    = document.getElementById("questionInput");
@@ -821,6 +822,15 @@ function addStreamSources(div, sources) {
     loading = true;
     document.getElementById("sendBtn").disabled = true;
 
+    // Previously the backend silently generated its own session_id when
+    // none was sent, but /ask/stream never told the frontend what it
+    // picked — so history never persisted past the first message.
+    // Generate it client-side instead so it's always known up front.
+    if (!sessionId) {
+        sessionId = crypto.randomUUID();
+        localStorage.setItem("legal_advisor_session", sessionId);
+    }
+
     addMessage("user", question);
     
     // Create empty AI bubble immediately — no waiting
@@ -828,9 +838,7 @@ function addStreamSources(div, sources) {
 
     try {
         // Build URL with query params for GET request
-        const params = new URLSearchParams({ question });
-        if (sessionId) params.append("session_id", sessionId);
-
+        const params = new URLSearchParams({ question, session_id: sessionId });
         const resp    = await fetch(`${API}/ask/stream?${params}`);
         const reader  = resp.body.getReader();
         const decoder = new TextDecoder();
@@ -862,19 +870,22 @@ function addStreamSources(div, sources) {
                         fullAnswer += msg.content;
                         updateStreamingBubble(aiDiv, fullAnswer);
                     }
-                    else if (msg.type === "meta") {
-                        // Metadata arrived — update session + show badges
-                        sessionId = msg.session_id;
-                        localStorage.setItem("legal_advisor_session", msg.session_id);
-                        msgCount++;
-                        document.getElementById("historyCount").textContent =
-                            `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
-                        addStreamBadges(aiDiv, msg.question_type, msg.query_source);
-                    }
+                    else if (msg.type === "metadata_update") {
+    // Backend sends question_type and query_source as two separate
+    // metadata_update events — addStreamBadges only appends whichever
+    // field is present each time, so calling it twice is safe.
+    addStreamBadges(aiDiv, msg.question_type, msg.query_source);
+}
                     else if (msg.type === "sources") {
-                        // Sources arrived — show citations
-                        addStreamSources(aiDiv, msg.sources);
-                    }
+    // Sources arrived — show citations
+    addStreamSources(aiDiv, msg.sources);
+
+    // End of turn — update the message counter (previously only
+    // happened inside the dead "meta" branch, so it never ran).
+    msgCount++;
+    document.getElementById("historyCount").textContent =
+        `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
+}
                     else if (msg.type === "error") {
                         updateStreamingBubble(aiDiv, 
                             `<span style="color:var(--red)">Error: ${msg.content}</span>`);

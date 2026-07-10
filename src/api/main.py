@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import os
 import re
 import time
+import asyncio
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +26,7 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder 
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
+from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 import groq as groq_sdk
 import sqlite3
@@ -45,6 +47,10 @@ TAVILY_KEY = os.getenv("TAVILY_API_KEY")
 HF_TOKEN   = os.getenv("HF_TOKEN", "")
 os.environ["HUGGINGFACE_HUB_TOKEN"] = HF_TOKEN 
 
+if not GROQ_KEY:
+    # Fail fast at startup instead of failing confusingly on the first request.
+    raise RuntimeError("GROQ_API_KEY is not set. Check your .env / environment variables.")
+
 SIMILARITY_THRESHOLD = 0.35 
 
 class LegalAdvisorState(TypedDict):
@@ -58,6 +64,27 @@ class LegalAdvisorState(TypedDict):
     query_source:        str
     chat_history:        list
     answer:              str
+# Groundedness detection
+# When similarity search returns a false-positive chunk above the threshold,
+# the LLM correctly says "I couldn't find this in the context" — but
+# retrieved_docs still holds that chunk, so it was being cited as a source
+# even though the answer admits it found nothing. We detect refusal /
+# not-found language in the final answer and use that to decide whether
+# sources should be attached to the response.
+
+NOT_FOUND_PATTERNS = re.compile(
+    r"(couldn't find|could not find|does not contain|doesn't contain|"
+    r"no (relevant|verifiable) (information|answer)|"
+    r"not (a real|mentioned) in (the )?context|"
+    r"context does not contain)",
+    re.IGNORECASE,
+)
+def is_grounded_answer(answer: str) -> bool:
+    """Returns False if the answer looks like a refusal / not-found response,
+    in which case retrieved_docs should NOT be surfaced as citations."""
+    if not answer:
+        return False
+    return not NOT_FOUND_PATTERNS.search(answer)
 
 def get_working_model():
     client    = groq_sdk.Groq(api_key=GROQ_KEY)
@@ -78,7 +105,6 @@ def get_working_model():
 
 MODEL = get_working_model()
 
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 embeddings = HuggingFaceEndpointEmbeddings(
     model="sentence-transformers/all-MiniLM-L6-v2",
@@ -91,7 +117,8 @@ llm = ChatGroq(
     model=MODEL,
     api_key=GROQ_KEY,
     temperature=0.2,
-    max_tokens=768,   
+    max_tokens=1024, 
+    model_kwargs={"frequency_penalty": 0.4},  
 )
 
 # SCENARIO DETECTOR
@@ -125,14 +152,28 @@ LEGAL_KEYWORDS = [
     "offence", "accused", "defendant", "plaintiff", "advocate", "solicitor"
 ]
 
+# def is_legal_question(question: str) -> bool:
+#     """
+#     Returns True if question is legal in nature.
+#     Prevents web search from being triggered for 
+#     completely off-topic questions like iPhone prices.
+#     """
+#     q = question.lower()
+#     return any(keyword in q for keyword in LEGAL_KEYWORDS)
+
 def is_legal_question(question: str) -> bool:
     """
     Returns True if question is legal in nature.
-    Prevents web search from being triggered for 
+    Prevents web search from being triggered for
     completely off-topic questions like iPhone prices.
     """
     q = question.lower()
-    return any(keyword in q for keyword in LEGAL_KEYWORDS)
+    if any(keyword in q for keyword in LEGAL_KEYWORDS):
+        return True
+    # Also treat domain-specific vocabulary (rent, husband, pregnant, etc.)
+    # as a legal signal — closes the gap where DOMAINS and LEGAL_KEYWORDS
+    # previously disagreed on what counts as "legal."
+    return any(kw in q for domain_kws in DOMAINS.values() for kw in domain_kws)
 
 def detect_question_type(question: str) -> str:
     """
@@ -158,6 +199,24 @@ def detect_question_type(question: str) -> str:
     # Default: simple factual question
     return "simple"
 
+async def call_with_retry(chain, input_data, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            return await asyncio.to_thread(chain.invoke, input_data)
+        except Exception as e:
+            # A 413/rate_limit_exceeded on request size will fail
+            # identically on every retry — the payload doesn't shrink
+            # between attempts. Fail fast instead of wasting up to
+            # 3 seconds retrying a guaranteed failure.
+            if "rate_limit_exceeded" in str(e) or "Request too large" in str(e):
+                raise
+            if attempt == max_retries - 1:
+                raise
+            wait_time = 2 ** attempt
+            print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
+            await asyncio.sleep(wait_time)
+
+
 # QUERY DECOMPOSITION
 # Breaks compound questions into sub-questions using the LLM,
 # answers each separately, then joins the results
@@ -176,10 +235,10 @@ Output:
 
 decompose_chain = decompose_prompt | llm | StrOutputParser()
 
-def decompose_question(question: str) -> list[str]:
+async def decompose_question(question: str) -> list[str]:
     """Uses LLM to break a compound question into sub-questions."""
-    
-    result = call_with_retry(decompose_chain, {"question": question})
+
+    result = await call_with_retry(decompose_chain, {"question": question})
     lines  = [l.strip() for l in result.strip().split("\n") if l.strip()]
     sub_questions = []
     for line in lines:
@@ -254,22 +313,6 @@ If the question is already standalone, return it exactly as-is."""),
 ])
 
 rephrase_chain = REPHRASE_PROMPT | llm | StrOutputParser()
-
-def call_with_retry(chain , input_data , max_retries=3):
-    """" Wraps any LangChain .invoke() call with retry logic.
-    Handles transient network failures with exponential backoff."""
-    for attempt in range(max_retries):
-        try:
-            return chain.invoke(input_data)
-        
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise  
-            else:
-                wait_time = 2 ** attempt
-
-                print(f"⚠️ Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
-                time.sleep(wait_time)
 
 def init_db():
     conn= sqlite3.connect(DB_SESSION_PATH)
@@ -372,6 +415,7 @@ def get_active_session_count() -> int:
         return cursor.fetchone()[0]   # fetchone() returns one row, [0] gets first column
     finally:
         conn.close()
+
 def web_search_fallback(question: str) -> str:
     query = question[:200]
 
@@ -402,6 +446,7 @@ def web_search_fallback(question: str) -> str:
     return results_text
     
 # langraph nodes
+
 def node_load_history(state: LegalAdvisorState)->dict:
     """
     Load the conversation history from sqlite for this session
@@ -415,7 +460,7 @@ def node_classify_question(state: LegalAdvisorState)->dict:
     """
     question_type = detect_question_type(state["original_question"])
     return {"question_type": question_type}
-def node_rephrase_query(state: LegalAdvisorState)->dict:
+async def node_rephrase_query(state: LegalAdvisorState)->dict:
     """
     Rephrase the question using the conversation history
     """
@@ -425,7 +470,7 @@ def node_rephrase_query(state: LegalAdvisorState)->dict:
     chat_history = trim_history_to_fit(chat_history)
 
     if chat_history:
-        standalone = call_with_retry(rephrase_chain, {
+        standalone = await call_with_retry(rephrase_chain, {
             "input": state["original_question"],
             "chat_history": state["chat_history"],
         })
@@ -439,16 +484,9 @@ def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
     
     if vectordb is None:
         raise Exception("VectorDB is not initialized. Cannot retrieve chunks.")
-    
-    # Create the retriever inside the node
-    retriever = vectordb.as_retriever(
-        search_type="mmr",
-        search_kwargs={"k": 6, "fetch_k": 15}
-    )
     standalone = state["standalone_question"]  
-    docs = retriever.invoke(standalone)  
     docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)    
-    docs          = [doc for doc, score in docs_with_scores]
+    docs = [doc for doc, score in docs_with_scores]
     highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
     
     return {"retrieved_docs": docs, "similarity_score": highest_score}
@@ -460,44 +498,48 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
     - Below threshold + legal → web_search (Tavily)
     - Below threshold + not legal → out_of_scope (refuse)
     """
-    similarity_score    = state["similarity_score"]
+    similarity_score = state["similarity_score"]
     standalone_question = state["standalone_question"]
-    docs                = state["retrieved_docs"]      # ← read from state
+    docs = state["retrieved_docs"]
+
+    # Constants
+    MAX_CONTEXT_CHARS = 4000
 
     if similarity_score >= SIMILARITY_THRESHOLD:
-        # ChromaDB has relevant content
-        context      = "\n\n---\n\n".join(doc.page_content for doc in docs)
-        query_source = "vector_search"
+        context = "\n\n---\n\n".join(doc.page_content for doc in docs)
+        if len(context) > MAX_CONTEXT_CHARS:
+            context = context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
         return {
-            "context":      context,
-            "query_source": query_source,
+            "context": context,
+            "query_source": "vector_search",
             "retrieved_docs": docs,
         }
 
     else:
         # Score too low — check if legal question
         if not is_legal_question(standalone_question):
-            # completely off-topic — refuse politely
+            # Completely off-topic — refuse politely
             return {
-                "answer":       "I am a Legal Advisor AI specializing in Indian law. "
-                                "I can only answer questions related to Indian legal acts, "
-                                "rights, and court judgements. Please ask a legal question.",
+                "answer": "I am a Legal Advisor AI specializing in Indian law. "
+                          "I can only answer questions related to Indian legal acts, "
+                          "rights, and court judgements. Please ask a legal question.",
                 "query_source": "out_of_scope",
-                "context":      "",
+                "context": "",
                 "retrieved_docs": [],
             }
 
-        # legal but not in DB → web search
-        print(f"Below threshold → web search")
-        context      = web_search_fallback(standalone_question)
-        query_source = "web_search"
+        # Legal but not in DB → web search
+        print("Below threshold → web search")
+        context = web_search_fallback(standalone_question)
+        if len(context) > MAX_CONTEXT_CHARS:
+            context = context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
         return {
-            "context":      context,
-            "query_source": query_source,
-            "retrieved_docs": [],   # no ChromaDB docs to cite
-        }
+            "context": context,
+            "query_source": "web_search",
+            "retrieved_docs": [],
+        }      
     
-def node_generate_answer(state: LegalAdvisorState) -> dict:
+async def node_generate_answer(state: LegalAdvisorState) -> dict:
     """Generate answer using LLM with correct prompt for question type."""
     question_type     = state["question_type"]
     context           = state["context"]
@@ -519,9 +561,16 @@ def node_generate_answer(state: LegalAdvisorState) -> dict:
 
     prompt = ChatPromptTemplate.from_messages(messages)
     chain  = prompt | llm | StrOutputParser()
-    answer = call_with_retry(chain, {})
+    answer = await call_with_retry(chain, {})
 
-    return {"answer": answer}   
+        #if the answer isn't actually grounded in the retrieved
+    # context (refusal / not-found language), drop retrieved_docs so we
+    # never cite sources on a response that admits it found nothing.
+    result = {"answer": answer}
+    if not is_grounded_answer(answer):
+        result["retrieved_docs"] = []
+    return result
+  
 def node_save_history(state: LegalAdvisorState)->dict:
     """
     Save the conversation history to sqlite for this session
@@ -569,10 +618,10 @@ def build_graph():
 legal_graph = build_graph()
 
 @traceable(name="Legal Advisor Graph")
-def run_legal_advisor(state):
+async def run_legal_advisor(state):
     # This tells LangGraph to use your wrapper as the "parent" 
     # and not create its own separate trace for the inner parts.
-    return legal_graph.invoke(state, {"run_name": "Legal Advisor Graph"})
+    return await legal_graph.ainvoke(state, {"run_name": "Legal Advisor Graph"})
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -622,7 +671,6 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-
 class QueryRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
@@ -648,14 +696,14 @@ async def ask_question(req: QueryRequest):
     question = req.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
-
-    session_id   = req.session_id or str(uuid.uuid4())
-    
+ 
+    session_id = req.session_id or str(uuid.uuid4())
+ 
     try:
-         result = run_legal_advisor({
+        result = await run_legal_advisor({
             "original_question": question,
             "session_id":        session_id,
-            "chat_history":      [],   # graph loads this internally
+            "chat_history":      [],
             "question_type":     "",
             "standalone_question": "",
             "retrieved_docs":    [],
@@ -664,30 +712,28 @@ async def ask_question(req: QueryRequest):
             "query_source":      "",
             "answer":            "",
         })
-
     except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Something went wrong processing your question.")
 
-
-    #De-duplicate sources 
     seen    = set()
     sources = []
-    for doc in result["retrieved_docs"]:
-        meta = doc.metadata
-        src  = os.path.basename(meta.get("source", "Unknown"))
-        page = meta.get("page")
-        if (src, page) not in seen:
-            seen.add((src, page))
-            sources.append(Source(source=src, page=page))
-
+    if is_grounded_answer(result["answer"]):
+        for doc in result["retrieved_docs"]:
+            meta = doc.metadata
+            src  = os.path.basename(meta.get("source", "Unknown"))
+            page = meta.get("page")
+            if (src, page) not in seen:
+                seen.add((src, page))
+                sources.append(Source(source=src, page=page))
+ 
     return QueryResponse(
         answer=result["answer"],
         sources=sources,
         session_id=session_id,
         question_type=result["question_type"],
-        query_source=result["query_source"], 
+        query_source=result["query_source"],
     )
 
 # @app.get("/ask/stream")
@@ -783,11 +829,14 @@ async def clear_session(session_id: str):
 
 @app.get("/ask/stream")
 async def ask_stream(question: str, session_id: Optional[str] = None):
+    question = question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+ 
     print(f"DEBUG: Entering ask_stream for question: {question}")
     session_id = session_id or str(uuid.uuid4())
-    
+ 
     async def generate():
-        # 1. Full State Initialization (Prevents KeyErrors)
         state = {
             "original_question": question,
             "session_id": session_id,
@@ -800,61 +849,85 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
             "query_source": "",
             "answer": ""
         }
-
-        # 2. Stream graph events
-        async for event in legal_graph.astream_events(state, version="v2"):
-            kind = event["event"]
-            node_name = event.get("name", "")
-            
-            # Stream tokens
-            if kind == "on_chat_model_stream":
-                content = event["data"]["chunk"].content
-                if content:
-                    yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
-            
-            # Stream status and metadata updates
-            elif kind == "on_chain_start":
-                yield f"data: {json.dumps({'type': 'status', 'node': node_name})}\n\n"
-            
-            elif kind == "on_chain_end":
-                output = event["data"].get("output", {})
-                
-                # Stream badges (Metadata)
-                if node_name == "classify_question" and "question_type" in output:
-                    yield f"data: {json.dumps({'type': 'metadata_update', 'question_type': output['question_type']})}\n\n"
-                
-                if node_name == "check_threshold" and "query_source" in output:
-                    yield f"data: {json.dumps({'type': 'metadata_update', 'query_source': output['query_source']})}\n\n"
-                
-                # Keep state updated for final source extraction
-                if isinstance(output, dict):
-                 state.update(output)
-
-        # 3. Stream Sources (at the end)
-        final_docs = state.get("retrieved_docs", [])
-        sources = []
-        seen = set()
-        for doc in final_docs:
-            meta = doc.metadata
-            src = os.path.basename(meta.get("source", "Unknown"))
-            page = meta.get("page")
-            if (src, page) not in seen:
-                seen.add((src, page))
-                sources.append({"source": src, "page": page})
-        
-        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
-        yield "data: [DONE]\n\n"
-
+ 
+        full_answer = ""
+ 
+        try:
+            async for event in legal_graph.astream_events(state, version="v2"):
+                kind = event["event"]
+                node_name = event.get("name", "")
+ 
+                if kind == "on_chat_model_stream":
+                        # Every LLM call in the graph (rephrase_query AND generate_answer)
+                        # fires on_chat_model_stream. Without filtering by node, rephrase
+                        # tokens leak into the visible answer, sometimes even replacing it
+                        # entirely (see: gratuity/landlord test cases). Only stream tokens
+                        # that actually came from the final-answer node.
+                        node_source = event.get("metadata", {}).get("langgraph_node")
+                        if node_source == "generate_answer":
+                           content = event["data"]["chunk"].content
+                           if content:
+                             full_answer += content
+                             yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+ 
+                elif kind == "on_chain_start":
+                    yield f"data: {json.dumps({'type': 'status', 'node': node_name})}\n\n"
+ 
+                elif kind == "on_chain_end":
+                    output = event["data"].get("output", {})
+ 
+                    if node_name == "classify_question" and "question_type" in output:
+                        yield f"data: {json.dumps({'type': 'metadata_update', 'question_type': output['question_type']})}\n\n"
+ 
+                    if node_name == "check_threshold" and "query_source" in output:
+                        yield f"data: {json.dumps({'type': 'metadata_update', 'query_source': output['query_source']})}\n\n"
+ 
+                    if isinstance(output, dict):
+                        state.update(output)
+ 
+            # out_of_scope sets "answer" directly in node_check_threshold and
+            # never calls the LLM, so no on_chat_model_stream events fire and
+            # no 'token' SSE event is sent by the loop above. Emit the
+            # fallback answer as a token here so the client actually shows it.
+            if not full_answer:
+                fallback_answer = state.get("answer", "")
+                if fallback_answer:
+                    yield f"data: {json.dumps({'type': 'token', 'content': fallback_answer})}\n\n"
+                    full_answer = fallback_answer
+ 
+            sources = []
+            if is_grounded_answer(full_answer):
+                seen = set()
+                for doc in state.get("retrieved_docs", []):
+                    meta = doc.metadata
+                    src = os.path.basename(meta.get("source", "Unknown"))
+                    page = meta.get("page")
+                    if (src, page) not in seen:
+                        seen.add((src, page))
+                        sources.append({"source": src, "page": page})
+ 
+            yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+ 
+        except Exception as e:
+            # Previously an exception anywhere in the graph just silently
+            # dropped the SSE connection with no signal to the frontend.
+            # Log the real error server-side; send only a generic message
+            # to the client (never leak internal errors/keys/stack traces).
+            print(f"ERROR in /ask/stream: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': 'Something went wrong generating the answer. Please try again.'})}\n\n"
+ 
+        finally:
+            yield "data: [DONE]\n\n"
+ 
     return StreamingResponse(generate(), media_type="text/event-stream")
-
 
 @app.get("/health")
 async def health():
-    count = vectordb._collection.count() if vectordb else 0
+    docs_count = vectordb._collection.count() if vectordb else 0
 
     return {
-        "status":          "ok",
-        "docs_in_db":      vectordb._collection.count(),
+        "status":          "ok" if vectordb else "degraded",
+        "docs_in_db":      docs_count,
         "model":           MODEL,
         "active_sessions": get_active_session_count(),
     }
