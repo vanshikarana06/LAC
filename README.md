@@ -56,7 +56,6 @@ score differences between local and API-based embeddings.*
  
 ### Phase 1 — Advanced Question Understanding
 - **Scenario detection** — classifies every question into `simple`, `scenario`, `multi_hop`, or `compound`
-- **Query decomposition** — breaks compound questions into sub-questions, answers each independently
 - **Specialized prompts** — 3 different prompt templates routed by question type
 ### Phase 2 — Hybrid Retrieval
 - **Semantic similarity search** against 19 indexed Indian legal Acts

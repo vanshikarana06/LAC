@@ -149,7 +149,8 @@ LEGAL_KEYWORDS = [
     "ipc", "judgement", "verdict", "case", "petition", "bail", "warrant",
     "harassment", "discrimination", "termination", "dispute", "police",
     "arrest", "fir", "complaint", "tribunal", "relief", "damages", "penalty",
-    "offence", "accused", "defendant", "plaintiff", "advocate", "solicitor"
+    "offence", "accused", "defendant", "plaintiff", "advocate", "solicitor",
+    "bns", "bnss", "bsa", "gst","tax", "taxation"
 ]
 
 # def is_legal_question(question: str) -> bool:
@@ -229,6 +230,8 @@ Use the context below to:
 
 If the context does not contain a real, verifiable answer, explicitly say so.
 NEVER invent case names, party names, or judgement years that are not in the context.
+If the provided context does not relate to the question being asked, say so explicitly rather than answering from general knowledge, even if you know the answer.
+
 
 Context:
 {context}"""
@@ -244,6 +247,7 @@ Use the context below to:
 
 If the context does not contain a real, verifiable answer, explicitly say so.
 NEVER invent case names, party names, or judgement years that are not in the context.
+If the provided context does not relate to the question being asked, say so explicitly rather than answering from general knowledge, even if you know the answer.
 
 Context:
 {context}"""
@@ -258,6 +262,7 @@ Use ONLY the context provided below to answer the question.
 
 If the context does not contain a real, verifiable answer, explicitly say so.
 NEVER invent case names, party names, or judgement years that are not in the context.
+If the provided context does not relate to the question being asked, say so explicitly rather than answering from general knowledge, even if you know the answer.
 
 Context:
 {context}"""
@@ -408,7 +413,8 @@ def web_search_fallback(question: str) -> str:
         return "No relevant results found from Indian legal sources for this query."
 
     results_text = "Web Search Results (Indian Legal Sources):\n\n" + "\n\n---\n\n".join(
-        f"{res['content']}\nSource: {res['url']}"
+        f"{res['content']}\n[This content was retrieved from the website: {res['url']} — "
+    f"this is a source citation, not a legal Act or Section name]"
         for res in results['results']
     )
     return results_text
