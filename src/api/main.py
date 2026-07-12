@@ -216,38 +216,6 @@ async def call_with_retry(chain, input_data, max_retries=3):
             print(f"Attempt {attempt + 1} failed: {e}. Retrying in {wait_time}s...")
             await asyncio.sleep(wait_time)
 
-
-# QUERY DECOMPOSITION
-# Breaks compound questions into sub-questions using the LLM,
-# answers each separately, then joins the results
-
-decompose_prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a legal query analyzer. Break the following compound legal question
-into 2-3 clear simple sub-questions that can each be answered independently.
-Return ONLY the sub-questions as a numbered list, nothing else.
-Example:
-Input: What are my maternity rights and how do I file a complaint if denied?
-Output:
-1. What are the maternity rights of an employee under Indian law?
-2. What is the process to file a complaint if maternity benefits are denied?"""),
-    ("human", "{question}")
-])
-
-decompose_chain = decompose_prompt | llm | StrOutputParser()
-
-async def decompose_question(question: str) -> list[str]:
-    """Uses LLM to break a compound question into sub-questions."""
-
-    result = await call_with_retry(decompose_chain, {"question": question})
-    lines  = [l.strip() for l in result.strip().split("\n") if l.strip()]
-    sub_questions = []
-    for line in lines:
-        # Remove "1. " or "2) " prefix using regex
-        cleaned = re.sub(r"^\d+[\.\)]\s*", "", line).strip()
-        if cleaned and len(cleaned) > 10:
-            sub_questions.append(cleaned)
-    return sub_questions if sub_questions else [question]
-
 #SPECIALIZED PROMPTS
 # Different prompt templates for different question types.
 SCENARIO_SYSTEM = """You are an expert Indian legal advisor. The user is asking a hypothetical or scenario-based legal question.
