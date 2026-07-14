@@ -230,6 +230,7 @@ Use the context below to:
 
 If the context does not contain a real, verifiable answer, explicitly say so.
 NEVER invent case names, party names, or judgement years that are not in the context.
+Only make claims that are directly supported by the context provided above. If you know additional relevant legal information that is not present in the context, do not include it in your answer — mention only that further research may be needed for aspects not covered here.
 If the provided context does not relate to the question being asked, say so explicitly rather than answering from general knowledge, even if you know the answer.
 
 
@@ -247,6 +248,7 @@ Use the context below to:
 
 If the context does not contain a real, verifiable answer, explicitly say so.
 NEVER invent case names, party names, or judgement years that are not in the context.
+Only make claims that are directly supported by the context provided above. If you know additional relevant legal information that is not present in the context, do not include it in your answer — mention only that further research may be needed for aspects not covered here.
 If the provided context does not relate to the question being asked, say so explicitly rather than answering from general knowledge, even if you know the answer.
 
 Context:
@@ -262,6 +264,7 @@ Use ONLY the context provided below to answer the question.
 
 If the context does not contain a real, verifiable answer, explicitly say so.
 NEVER invent case names, party names, or judgement years that are not in the context.
+Only make claims that are directly supported by the context provided above. If you know additional relevant legal information that is not present in the context, do not include it in your answer — mention only that further research may be needed for aspects not covered here.
 If the provided context does not relate to the question being asked, say so explicitly rather than answering from general knowledge, even if you know the answer.
 
 Context:

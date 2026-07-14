@@ -20,6 +20,8 @@ BEFORE RUNNING — confirm this import path matches your project structure.
 import asyncio
 import sys
 import os
+import uuid
+from langchain_groq import ChatGroq
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -41,7 +43,7 @@ from ragas.llms import LangchainLLMWrapper
 from ragas.embeddings import LangchainEmbeddingsWrapper
 from datasets import Dataset
 
-from ragas_eval_dataset import EVAL_QUESTIONS
+from ragas_eval_dataset import EVAL_QUESTIONS, ANSWERABLE_QUESTIONS, SHOULD_REFUSE_QUESTIONS
 
 
 async def run_pipeline_for_question(question: str) -> dict:
@@ -49,7 +51,14 @@ async def run_pipeline_for_question(question: str) -> dict:
     answer + retrieved context, exactly as a live /ask request would."""
     result = await run_legal_advisor({
         "original_question": question,
-        "session_id": "ragas-eval-session",
+        # Each eval question must be independent — a fixed session_id here
+        # meant every question after the first inherited the prior
+        # questions' chat history via node_load_history, which grew
+        # rephrase_query's prompt size on every iteration and eventually
+        # triggered the same 413 token-limit error we fixed earlier for
+        # real usage, but for an unrelated reason (test-script history
+        # bleed, not oversized retrieved context).
+        "session_id": f"ragas-eval-{uuid.uuid4()}",
         "chat_history": [],
         "question_type": "",
         "standalone_question": "",
@@ -114,9 +123,14 @@ async def main():
         print("Building evaluation dataset by running questions through the live pipeline...\n")
         dataset, query_sources = await build_eval_dataset()
 
-        print("\nRunning RAGAS evaluation (this calls the LLM several times per question — may take several minutes)...\n")
-
-        ragas_llm = LangchainLLMWrapper(llm)
+        print("\nRunning RAGAS evaluation (this calls the LLM several times per question — may take several minutes)...\n")                
+        eval_judge_llm = ChatGroq(
+                 model=llm.model_name,  # same model, different config
+                 api_key=llm.groq_api_key,
+                 temperature=0.0,       # judging should be deterministic, not creative
+                 max_tokens=2048,       # more headroom than your app's answer-generation LLM
+               )
+        ragas_llm = LangchainLLMWrapper(eval_judge_llm)
         ragas_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
         # strictness=1: default is 3, which asks the LLM for 3 variant
@@ -145,19 +159,23 @@ async def main():
 
         df = result.to_pandas()
         df["query_source"] = query_sources
+        # Tag each row so we can report answerable vs should-refuse
+        # questions separately — context_precision/recall are only
+        # meaningful for the answerable set.
+        should_refuse_texts = {q["question"] for q in SHOULD_REFUSE_QUESTIONS}
+        df["category"] = df["user_input"].apply(
+            lambda q: "should_refuse" if q in should_refuse_texts else "answerable"
+        )
 
         output_path = "ragas_results.csv"
         df.to_csv(output_path, index=False)
 
-        # RAGAS 0.3.x may use different column names than older versions
-        # (e.g. user_input instead of question). Print actual columns so
-        # nothing below silently breaks on a naming mismatch again.
         print("\nActual result columns:", df.columns.tolist())
 
         print("\n" + "=" * 60)
         print("RESULTS SUMMARY")
         print("=" * 60)
-        id_cols = [c for c in ["user_input", "question", "query_source"] if c in df.columns]
+        id_cols = [c for c in ["user_input", "query_source", "category"] if c in df.columns]
         metric_cols = [c for c in
                         ["faithfulness", "answer_relevancy",
                          "llm_context_precision_with_reference", "context_precision",
@@ -166,15 +184,25 @@ async def main():
         print(df[id_cols + metric_cols].to_string(index=False))
 
         print("\n" + "-" * 60)
-        print("AVERAGES (overall)")
+        print("ANSWERABLE QUESTIONS — all 4 metrics are meaningful here")
         print("-" * 60)
+        answerable_df = df[df["category"] == "answerable"]
         for metric in metric_cols:
-            print(f"{metric}: {df[metric].mean():.3f}")
+            print(f"{metric}: {answerable_df[metric].mean():.3f}")
 
         print("\n" + "-" * 60)
-        print("AVERAGES BY ROUTING PATH")
+        print("SHOULD-REFUSE QUESTIONS — only faithfulness/answer_relevancy are meaningful;")
+        print("context_precision/recall are NOT meaningful for these (no real fact to recall)")
         print("-" * 60)
-        print(df.groupby("query_source")[metric_cols].mean())
+        refuse_df = df[df["category"] == "should_refuse"]
+        for metric in ["faithfulness", "answer_relevancy"]:
+            if metric in refuse_df.columns:
+                print(f"{metric}: {refuse_df[metric].mean():.3f}")
+
+        print("\n" + "-" * 60)
+        print("AVERAGES BY ROUTING PATH (answerable questions only)")
+        print("-" * 60)
+        print(answerable_df.groupby("query_source")[metric_cols].mean())
 
         print(f"\nFull results saved to: {output_path}")
 

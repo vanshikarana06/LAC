@@ -1,6 +1,12 @@
 """
 RAGAS Evaluation Dataset — Legal Advisor AI
 
+IMPORTANT: The ground_truth answers below are DRAFTS to save you typing time.
+You MUST review and correct each one against the actual Act text before
+trusting your RAGAS scores — inaccurate ground truths produce meaningless
+context_precision/context_recall numbers. Treat these as a starting point,
+not a finished dataset.
+
 Covers: vector_search path, web_search path, out_of_scope path, and the
 known hallucination case from your test batch (same-sex marriage / fake
 case name) — that last one deliberately has NO good ground truth, since
@@ -8,7 +14,26 @@ the whole point is testing whether the model correctly refuses instead
 of hallucinating.
 """
 
-EVAL_QUESTIONS = [
+"""
+RAGAS Evaluation Dataset — Legal Advisor AI
+
+IMPORTANT: The ground_truth answers below are DRAFTS to save you typing time.
+You MUST review and correct each one against the actual Act text before
+trusting your RAGAS scores.
+
+Questions are split into two categories:
+- ANSWERABLE: real factual questions with a real ground truth. Score all
+  4 metrics (faithfulness, answer_relevancy, context_precision, context_recall)
+  meaningfully for these.
+- SHOULD_REFUSE: adversarial/out-of-scope questions where the correct
+  behavior is refusing to answer. context_precision/recall are NOT
+  meaningful for these (there's no real fact to "recall" from context) —
+  only judge these on faithfulness and manual inspection of whether the
+  bot actually refused. Averaging these into your overall precision/recall
+  numbers artificially inflates them — keep them separate.
+"""
+
+ANSWERABLE_QUESTIONS = [
     {
         "question": "What is the punishment for theft under IPC?",
         "ground_truth": (
@@ -55,6 +80,9 @@ EVAL_QUESTIONS = [
             "and police cannot investigate without a magistrate's permission."
         ),
     },
+]
+
+SHOULD_REFUSE_QUESTIONS = [
     {
         "question": "What did the Supreme Court rule on same-sex marriage in the sahil-sourav case?",
         "ground_truth": (
@@ -72,3 +100,6 @@ EVAL_QUESTIONS = [
         ),
     },
 ]
+
+# Kept for backward compatibility with the eval script's existing import.
+EVAL_QUESTIONS = ANSWERABLE_QUESTIONS + SHOULD_REFUSE_QUESTIONS
