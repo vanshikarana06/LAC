@@ -21,7 +21,6 @@ import asyncio
 import sys
 import os
 import uuid
-from langchain_groq import ChatGroq
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -123,14 +122,9 @@ async def main():
         print("Building evaluation dataset by running questions through the live pipeline...\n")
         dataset, query_sources = await build_eval_dataset()
 
-        print("\nRunning RAGAS evaluation (this calls the LLM several times per question — may take several minutes)...\n")                
-        eval_judge_llm = ChatGroq(
-                 model=llm.model_name,  # same model, different config
-                 api_key=llm.groq_api_key,
-                 temperature=0.0,       # judging should be deterministic, not creative
-                 max_tokens=2048,       # more headroom than your app's answer-generation LLM
-               )
-        ragas_llm = LangchainLLMWrapper(eval_judge_llm)
+        print("\nRunning RAGAS evaluation (this calls the LLM several times per question — may take several minutes)...\n")
+
+        ragas_llm = LangchainLLMWrapper(llm)
         ragas_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
         # strictness=1: default is 3, which asks the LLM for 3 variant
