@@ -1,5 +1,4 @@
 import sys
-# Force stdout to flush immediately so you can see logs in Render
 sys.stdout.reconfigure(line_buffering=True)
 print("DEBUG: API File Loaded Successfully")
 from contextlib import asynccontextmanager
@@ -153,15 +152,6 @@ LEGAL_KEYWORDS = [
     "bns", "bnss", "bsa", "gst","tax", "taxation"
 ]
 
-# def is_legal_question(question: str) -> bool:
-#     """
-#     Returns True if question is legal in nature.
-#     Prevents web search from being triggered for 
-#     completely off-topic questions like iPhone prices.
-#     """
-#     q = question.lower()
-#     return any(keyword in q for keyword in LEGAL_KEYWORDS)
-
 def is_legal_question(question: str) -> bool:
     """
     Returns True if question is legal in nature.
@@ -171,9 +161,6 @@ def is_legal_question(question: str) -> bool:
     q = question.lower()
     if any(keyword in q for keyword in LEGAL_KEYWORDS):
         return True
-    # Also treat domain-specific vocabulary (rent, husband, pregnant, etc.)
-    # as a legal signal — closes the gap where DOMAINS and LEGAL_KEYWORDS
-    # previously disagreed on what counts as "legal."
     return any(kw in q for domain_kws in DOMAINS.values() for kw in domain_kws)
 
 def detect_question_type(question: str) -> str:
