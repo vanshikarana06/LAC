@@ -124,7 +124,15 @@ async def main():
 
         print("\nRunning RAGAS evaluation (this calls the LLM several times per question — may take several minutes)...\n")
 
-        ragas_llm = LangchainLLMWrapper(llm)
+        from langchain_groq import ChatGroq
+
+        eval_judge_llm = ChatGroq(
+            model=llm.model_name,
+            api_key=llm.groq_api_key,
+            temperature=0.0,      # judging should be deterministic, not creative
+            max_tokens=4096,
+        )
+        ragas_llm = LangchainLLMWrapper(eval_judge_llm)
         ragas_embeddings = LangchainEmbeddingsWrapper(embeddings)
 
         # strictness=1: default is 3, which asks the LLM for 3 variant

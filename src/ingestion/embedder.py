@@ -7,7 +7,7 @@ from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.documents import Document
 import dotenv
 dotenv.load_dotenv()
- 
+
 HF_TOKEN = os.getenv("HF_TOKEN")
  
 class LegalIngestor:
@@ -51,15 +51,18 @@ class LegalIngestor:
         #  Chunking
         # Larger chunks = more context per retrieval = better answers
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1500,        
-            chunk_overlap=200,      
-            separators=[
-                "\nSection", "\nSECTION",
-                "\nArticle", "\nARTICLE",
-                "\nClause", "\nCLAUSE",
-                "\n\n", "\n", ". ", " "
-            ]
-        )
+                  chunk_size=1500,        
+                  chunk_overlap=200,      
+                  separators=[
+                      r"\n\d{1,3}[A-Z]?\.\s",
+                      "\nSection", "\nSECTION",
+                      "\nArticle", "\nARTICLE",
+                      "\nClause", "\nCLAUSE",
+                      "\n\n", "\n", ". ", " "
+                  ],
+                  is_separator_regex=True,
+                  keep_separator="start",
+)
  
         chunks = splitter.split_documents(cleaned_documents)
         print(f" Split into {len(chunks)} chunks")
