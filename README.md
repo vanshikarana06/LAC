@@ -1,15 +1,15 @@
 # ⚖️ Legal Advisor AI
- 
+
 > A production-grade RAG (Retrieval-Augmented Generation) system that makes Indian law accessible to ordinary citizens — factory workers, women denied maternity benefits, consumers cheated by companies — who need legal guidance but cannot afford a lawyer.
- 
+
 **🌐 Live Demo:** [https://legal-advisor-ai-go7g.onrender.com](https://legal-advisor-ai-go7g.onrender.com)
- 
+
 ---
- 
+
 ## 🏗️ Architecture
- 
+
 This project implements a **LangGraph stateful workflow** with 7 discrete nodes, replacing a monolithic RAG function with a declarative, testable graph pipeline.
- 
+
 ```
 User Question
       ↓
@@ -19,12 +19,12 @@ User Question
       ↓
 [node_rephrase_query]      — Contextualize follow-up questions
       ↓
-[node_retrieve_chunks]     — Semantic search via ChromaDB (MMR, k=6)
+[node_retrieve_chunks]     — Semantic search via ChromaDB (similarity search, k=6)
       ↓
 [node_check_threshold]     — Score-based three-way routing
       ↓
    ┌──────────────────────────────────────┐
-   │  score ≥ 0.45     score < 0.45      │
+   │  score ≥ 0.35     score < 0.35      │
    │  📚 Legal DB      + legal topic      │
    │       ↓           🌐 Web Search      │
    │       ↓           + not legal        │
@@ -37,9 +37,9 @@ User Question
       ↓
    Response
 ```
- 
+
 ### Three-Way Routing
- 
+
 | Route | Condition | Source Badge |
 |---|---|---|
 | ChromaDB | similarity score ≥ 0.35 | Legal DB |
@@ -51,9 +51,9 @@ representative queries — legal questions scored 0.45–0.55, out-of-scope
 scored below 0.38. Production threshold set to 0.35 to account for slight 
 score differences between local and API-based embeddings.* 
 ---
- 
+
 ## ✨ Features
- 
+
 ### Phase 1 — Advanced Question Understanding
 - **Scenario detection** — classifies every question into `simple`, `scenario`, `multi_hop`, or `compound`
 - **Specialized prompts** — 3 different prompt templates routed by question type
@@ -77,11 +77,11 @@ score differences between local and API-based embeddings.*
 - Token overflow prevention via history trimming before LLM calls
 - Negative similarity score clamping
 ---
- 
+
 ## 📚 Knowledge Base
- 
-**19 Indian Acts** across 5 legal domains — 3,739 semantic chunks indexed:
- 
+
+**19 Indian Acts** across 5 legal domains — 3,901 semantic chunks indexed:
+
 | Category | Acts |
 |---|---|
 | Constitutional | Constitution of India |
@@ -90,83 +90,83 @@ score differences between local and API-based embeddings.*
 | Criminal | Indian Penal Code 1860, Code of Criminal Procedure 1973 |
 | Consumer & Civil | Consumer Protection Act 2019, RTI Act 2005, Transfer of Property Act, Indian Succession Act |
 | Family | Hindu Marriage Act |
- 
+
 ---
- 
+
 ## 🛠️ Tech Stack
- 
+
 | Component | Technology |
 |---|---|
 | Backend | FastAPI (Python) |
 | AI Workflow | LangGraph |
 | LLM | Groq — LLaMA 3.1 8B Instant |
 | Embeddings | HuggingFace Inference API (all-MiniLM-L6-v2) |
-| Vector Store | ChromaDB (MMR search) |
+| Vector Store | ChromaDB (similarity search) |
 | Web Search | Tavily API |
 | Session Storage | SQLite + localStorage |
 | Frontend | HTML / CSS / JavaScript |
 | Deployment | Render (free tier) |
- 
+
 ---
- 
+
 ## 🚀 Local Setup
- 
+
 ### Prerequisites
 - Python 3.10+
 - Free API keys: [Groq](https://console.groq.com) · [Tavily](https://tavily.com) · [HuggingFace](https://huggingface.co/settings/tokens)
 ### Installation
- 
+
 ```bash
 # 1. Clone the repo
 git clone https://github.com/vanshikarana06/LAC.git
 cd LAC
- 
+
 # 2. Create virtual environment
 python -m venv venv
 venv\Scripts\activate      # Windows
 # source venv/bin/activate  # Mac/Linux
- 
+
 # 3. Install dependencies
 pip install -r requirements.txt
- 
+
 # 4. Set up environment variables
 cp .env.example .env
 # Add your API keys to .env
 ```
- 
+
 ### Environment Variables
- 
+
 ```env
 GROQ_API_KEY=gsk_...
 TAVILY_API_KEY=tvly_...
 HF_TOKEN=hf_...
 DB_PATH=data_vector_db
 ```
- 
+
 ### Run
- 
+
 ```bash
 python -m uvicorn src.api.main:app --reload --port 8001
 ```
- 
+
 Visit: **http://localhost:8001**
- 
+
 ### Rebuild Vector Database (if adding new PDFs)
- 
+
 ```bash
 # Drop new PDFs into data_raw/
 # Delete old database
 Remove-Item -Recurse -Force data_vector_db   # Windows
 # rm -rf data_vector_db                       # Mac/Linux
- 
+
 # Rebuild
 python src/ingestion/embedder.py
 ```
- 
+
 ---
- 
+
 ## 🔌 API Reference
- 
+
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Serves the web UI |
@@ -175,9 +175,9 @@ python src/ingestion/embedder.py
 | `GET` | `/acts` | List all indexed legal Acts |
 | `DELETE` | `/session/{id}` | Clear conversation history |
 | `GET` | `/docs` | Auto-generated Swagger UI |
- 
+
 ### Request
- 
+
 ```json
 POST /ask
 {
@@ -185,9 +185,9 @@ POST /ask
   "session_id": "optional-existing-session-uuid"
 }
 ```
- 
+
 ### Response
- 
+
 ```json
 {
   "answer": "Under the Payment of Gratuity Act, 1972...",
@@ -197,44 +197,48 @@ POST /ask
   "query_source": "vector_search"
 }
 ```
- 
+
 ---
- 
+
 ## 🧠 Key Engineering Decisions
- 
+
 **Why LangGraph over a monolithic function?**
 Each pipeline step is an isolated, testable node. Conditional edges make routing explicit and declarative. The graph can be extended with new nodes (e.g., clarification questions, user feedback) without modifying existing nodes.
- 
+
 **Why SQLite over Redis for sessions?**
 At current scale (single server, resume project), SQLite provides full persistence with zero infrastructure overhead. Redis would be the correct migration when horizontal scaling becomes necessary.
- 
+
 **Why empirical threshold tuning?**
-The 0.45 similarity threshold was determined by testing representative queries and identifying the natural score gap between in-domain legal questions (0.45–0.55) and out-of-scope questions (below 0.38) — not by guessing.
- 
+The 0.35 similarity threshold was determined by testing representative queries and identifying the natural score gap between in-domain legal questions (0.45–0.55) and out-of-scope questions (below 0.38) — not by guessing.
+
 **Why restrict web search to Indian legal domains?**
 Unrestricted web search returned US Supreme Court cases for Indian law queries. Domain restriction to `indiankanoon.org`, `sci.gov.in`, and `livelaw.in` ensures results are jurisdictionally relevant.
- 
+
 ---
- 
+
 ## 📊 Chunking Strategy
- 
+
 ```python
 RecursiveCharacterTextSplitter(
-    chunk_size=1500,      # captures full legal clauses
-    chunk_overlap=200,    # prevents mid-sentence splits
+    chunk_size=1500,          # captures full legal clauses
+    chunk_overlap=200,        # prevents mid-sentence splits
     separators=[
+        r"\n\d{1,3}[A-Z]?\.\s",   # matches bare section numbering, e.g. "379. " or "124A. "
         "\nSection", "\nSECTION",
         "\nArticle", "\nARTICLE",
-        "\nClause",  "\n\n", "\n"
-    ]
+        "\nClause", "\nCLAUSE",
+        "\n\n", "\n", ". ", " "
+    ],
+    is_separator_regex=True,
+    keep_separator="start",
 )
 ```
- 
-Legal-aware separators ensure chunks split at section boundaries rather than mid-clause.
- 
+
+The primary separator matches each source document's actual numbering format directly (most Acts number provisions as bare digits, e.g. `379.`, rather than the word "Section"), so chunks split cleanly at the start of each legal provision instead of at arbitrary character-count boundaries. Word-based separators remain as fallbacks for documents that do use "Section"/"Article" explicitly.
+
 ---
- 
+
 ## ⚠️ Disclaimer
- 
+
 This application provides general legal information for educational purposes only. It is not a substitute for professional legal advice. Always consult a qualified lawyer for legal matters.
 
