@@ -399,14 +399,15 @@ def web_search_fallback(question: str) -> str:
     print("Performing web search for:", query)
     results = tool.invoke({"query": query})
 
+    if isinstance(results, str):
+        return f"No relevant results found from Indian legal sources for this query. ({results})"
+    
     if "results" not in results or not results["results"]:
         return "No relevant results found from Indian legal sources for this query."
 
     results_text = "Web Search Results (Indian Legal Sources):\n\n" + "\n\n---\n\n".join(
-        f"{res['content']}\n[This content was retrieved from the website: {res['url']} — "
-    f"this is a source citation, not a legal Act or Section name]"
-        for res in results['results']
-    )
+        f"{res['content']}\nSource: {res['url']}"
+        for res in results['results']    )
     return results_text
     
 # langraph nodes
