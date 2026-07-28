@@ -1,0 +1,23 @@
+# PRODUCTION — required for main.py to run, on Render or locally
+
+fastapi==0.139.0
+uvicorn[standard]==0.50.2
+python-dotenv==1.2.2
+pydantic==2.13.4
+
+langchain==1.3.11
+langchain-community==0.3.31
+langchain-core==1.4.8
+langchain-text-splitters==1.1.2
+langchain-huggingface==1.2.2
+langchain-groq==1.1.3
+langgraph==1.2.8
+langsmith==0.9.8
+
+tavily-python==0.7.26
+langchain-tavily==0.2.18
+
+pypdf==6.14.2
+chromadb==1.5.9
+langchain-chroma==1.1.0
+huggingface-hub==0.36.2
