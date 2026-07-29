@@ -1,25 +1,25 @@
-# Base image: an official, minimal Linux distro with Python 3.12 already installed.
+# syntax=docker/dockerfile:1.7
+# The line above enables BuildKit's newer secret-mounting syntax used below.
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install dependencies first
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
-# Set RENDER=true at BUILD time too — main.py's embeddings branch checks this,
-# and we want the lightweight API-based path even during the build step below.
 ENV RENDER=true
 
-# Copy source PDFs and the ingestion script, then BUILD the vector database
-# right here, during the image build. 
-# NOTE: this requires GROQ_API_KEY / HF_TOKEN to be available at BUILD time,
-# into the Docker build step. 
 COPY data_raw/ ./data_raw/
 COPY src/ingestion/ ./src/ingestion/
-RUN python src/ingestion/embedder.py
 
-# Now copy the rest of the application code.
+# Render's Secret Files (/etc/secrets/hf_token) or local BuildKit's
+# --secret mount (/run/secrets/hf_token). Neither path is baked into
+# any image layer either way — same security property as before, now
+# working on both my machine and Render.
+RUN --mount=type=secret,id=hf_token \
+    HF_TOKEN=$(cat /etc/secrets/hf_token 2>/dev/null || cat /run/secrets/hf_token 2>/dev/null) \
+    python src/ingestion/embedder.py
+
 COPY src/api/ ./src/api/
 COPY static/ ./static/
 
