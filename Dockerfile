@@ -1,33 +1,28 @@
 # Base image: an official, minimal Linux distro with Python 3.12 already installed.
-# "slim" = smaller than the full python image (no extra build tools you don't need).
 FROM python:3.12-slim
 
-#the working directory INSIDE the container. Every command below runs
-# relative to this path 
 WORKDIR /app
 
-ENV RENDER=true
-
-# Copy ONLY the requirements file first, before the rest of your code.
-# Why separately: Docker caches each step. If your code changes but
-# requirements.txt doesn't, Docker reuses the cached "pip install" result
-# instead of reinstalling everything from scratch every single build.
+# Install dependencies first
 COPY requirements-docker.txt .
-
-# --no-cache-dir: don't keep pip's download cache inside the image — saves space,
-# since we'll never run pip again inside this exact container.
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
-# Now copy your actual application code.
-COPY src/ ./src/
+# Set RENDER=true at BUILD time too — main.py's embeddings branch checks this,
+# and we want the lightweight API-based path even during the build step below.
+ENV RENDER=true
+
+# Copy source PDFs and the ingestion script, then BUILD the vector database
+# right here, during the image build. 
+# NOTE: this requires GROQ_API_KEY / HF_TOKEN to be available at BUILD time,
+# into the Docker build step. 
+COPY data_raw/ ./data_raw/
+COPY src/ingestion/ ./src/ingestion/
+RUN python src/ingestion/embedder.py
+
+# Now copy the rest of the application code.
+COPY src/api/ ./src/api/
 COPY static/ ./static/
 
-# Documents which port this container listens on at runtime. 
-#  it does NOT actually publish the
-# port by itself (that happens with `-p` when you run the container).
 EXPOSE 8001
 
-# The actual startup command — runs when the container starts.
-# Uses 0.0.0.0 (not 127.0.0.1) so the server accepts connections from
-# outside the container, not just from inside it.
 CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8001"]
