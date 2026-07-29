@@ -482,7 +482,7 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
 
     else:
         # Score too low — check if legal question
-        if not is_legal_question(standalone_question):
+        if not is_legal_question(standalone_question) and not is_legal_question(state["original_question"]):
             # Completely off-topic — refuse politely
             return {
                 "answer": "I am a Legal Advisor AI specializing in Indian law. "
