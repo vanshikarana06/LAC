@@ -2,7 +2,7 @@
 
 > A production-grade RAG (Retrieval-Augmented Generation) system that makes Indian law accessible to ordinary citizens — factory workers, women denied maternity benefits, consumers cheated by companies — who need legal guidance but cannot afford a lawyer.
 
-**🌐 Live Demo:** [https://legal-advisor-ai-go7g.onrender.com](https://legal-advisor-ai-go7g.onrender.com)
+**🌐 Live Demo:** [https://lac-oebg.onrender.com/](https://lac-oebg.onrender.com/)
 
 ---
 
