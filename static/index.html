@@ -476,6 +476,14 @@
           <button class="new-chat-btn" onclick="newChat()">✦ New chat</button>
           <div id="historyCount" class="history-badge"></div>
         </div>
+
+        <div class="sidebar-section">
+             <h3>Recent Chats</h3>
+             <div class="acts-list" id="sessionsList">
+             <div class="act-chip" style="color: var(--text-dim); font-size: 0.7rem">Loading…</div>
+             </div>
+        </div>
+
         <div class="sidebar-section">
           <h3>Loaded Acts</h3>
           <div class="acts-list" id="actsList">
@@ -608,6 +616,48 @@
           document.getElementById("statusText").textContent = "offline";
         }
       }
+
+async function loadSessions() {
+    try {
+        const r = await fetch(`${API}/sessions`);
+        const d = await r.json();
+        const container = document.getElementById("sessionsList");
+
+        if (!d.sessions.length) {
+            container.innerHTML = `<div class="act-chip" style="color: var(--text-dim); font-size: 0.7rem">No past chats yet</div>`;
+            return;
+        }
+
+        container.innerHTML = d.sessions.map(s => {
+            const isActive = s.session_id === sessionId;
+            return `<div class="act-chip" style="cursor:pointer; ${isActive ? 'border-color: var(--gold-dim); color: var(--gold-light);' : ''}"
+                         onclick="switchSession('${s.session_id}')">
+                        💬 ${s.preview}
+                    </div>`;
+        }).join("");
+    } catch {}
+}
+
+async function switchSession(newSessionId) {
+    if (newSessionId === sessionId) return;   // already viewing this one
+
+    sessionId = newSessionId;
+    localStorage.setItem("legal_advisor_session", sessionId);
+
+    const r = await fetch(`${API}/session/${sessionId}/history`);
+    const d = await r.json();
+
+    document.getElementById("chatWindow").innerHTML = "";
+    for (const msg of d.messages) {
+        if (msg.role === "human") {
+            addMessage("user", msg.content);
+        } else {
+            addMessage("ai", formatAnswer(msg.content));
+        }
+    }
+
+    loadSessions();   // refresh sidebar so the new active session gets highlighted
+}
 
       async function loadActs() {
         try {
@@ -746,7 +796,7 @@ function addStreamSources(div, sources) {
     ).join("")}</div>`;
 }
 
-      function formatAnswer(text) {
+function formatAnswer(text) {
         return text
           .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
           .replace(/---/g, "<hr>")
@@ -812,7 +862,7 @@ function addStreamSources(div, sources) {
       // }
 
 
-      async function sendQuestion() {
+    async function sendQuestion() {
     if (loading) return;
     const input    = document.getElementById("questionInput");
     const question = input.value.trim();
@@ -885,6 +935,7 @@ function addStreamSources(div, sources) {
     msgCount++;
     document.getElementById("historyCount").textContent =
         `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
+        loadSessions();
 }
                     else if (msg.type === "error") {
                         updateStreamingBubble(aiDiv, 
@@ -925,6 +976,7 @@ function addStreamSources(div, sources) {
 
       checkHealth();
       loadActs();
+      loadSessions();
     </script>
   </body>
 </html>

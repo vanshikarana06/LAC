@@ -792,6 +792,62 @@ async def clear_session(session_id: str):
     finally:
         conn.close()
 
+@app.get("/sessions")
+async def list_sessions():
+    """Returns every session that has at least one message, most recent first,
+    with a short preview so the sidebar can show something meaningful."""
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT session_id, MIN(msg_time), MAX(msg_time), COUNT(*)
+            FROM messages
+            GROUP BY session_id
+            ORDER BY MAX(msg_time) DESC
+        """)
+        rows = cursor.fetchall()
+
+        sessions = []
+        for session_id, started, last_active, msg_count in rows:
+            cursor.execute("""
+                SELECT msg_content FROM messages
+                WHERE session_id = ? AND msg_type = 'human'
+                ORDER BY msg_time ASC LIMIT 1
+            """, (session_id,))
+            first_q = cursor.fetchone()
+            preview = first_q[0] if first_q else "New conversation"
+            if len(preview) > 60:
+                preview = preview[:60] + "..."
+
+            sessions.append({
+                "session_id": session_id,
+                "preview": preview,
+                "message_count": msg_count // 2,
+                "last_active": last_active,
+            })
+        return {"sessions": sessions}
+    finally:
+        conn.close()
+
+
+@app.get("/session/{session_id}/history")
+async def get_session_history(session_id: str):
+    conn = sqlite3.connect(DB_SESSION_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT msg_type, msg_content FROM messages
+            WHERE session_id = ? ORDER BY msg_time ASC
+        """, (session_id,))
+        rows = cursor.fetchall()
+        return {
+            "session_id": session_id,
+            "messages": [{"role": r[0], "content": r[1]} for r in rows]
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/ask/stream")
 async def ask_stream(question: str, session_id: Optional[str] = None):
     question = question.strip()
