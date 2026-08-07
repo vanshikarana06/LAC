@@ -505,50 +505,46 @@ def _is_ambiguous(score:float, question:str)->bool :
     if len(cleaned.strip().split()) <= 4:
         return True
     return False
-async def node_plan_action(state: LegalAdvisorState)->dict :
-    """"Only reached for the ambiguous cases(see _is_ambiguous). Uses LLM judgment
-    instead of the deterministic threshold/keywords check for the genuinely uncertain 
-    questions- including a NEW capability the old system never had : asking a clarifying question 
-     insted of forcing a weak answer. """
-
-    question= state["standalone_question"]
-    result= await call_with_retry(planner_chain, {"question":question})
+async def node_plan_action(state: LegalAdvisorState) -> dict:
+    question = state["standalone_question"]
+    result = await call_with_retry(planner_chain, {"question": question})
     print(f"DEBUG planner raw output:\n{result}\n---")
-    action= "web search"
-    clarifying_q= ""
+
+    action = "web_search"
+    clarifying_q = ""
     for line in result.split("\n"):
         if line.startswith("ACTION"):
-            action= line.replace("ACTION:","").strip().lower()
+            action = line.replace("ACTION:", "").strip().lower()
         elif line.startswith("CLARIFYING_QUESTION"):
-            clarifying_q= line.replace("CLARIFYING_QUESTION:","").strip()
-        if action=="clarify" and clarifying_q:
-            return {
-                "answer": clarifying_q,
-                "query_source": "clarification",
-                "context":"",
-                "retrieved_docs":[]
+            clarifying_q = line.replace("CLARIFYING_QUESTION:", "").strip()
+    # everything below is now OUTSIDE the for loop — runs once, after all
+    # three lines have been read, not once per line
 
-            }
-        elif action=="refuse":
-            return {
-                "answer": "I am a Legal Advisor AI specializing in Indian law. "
+    if action == "clarify" and clarifying_q:
+        return {
+            "answer": clarifying_q,
+            "query_source": "clarification",
+            "context": "",
+            "retrieved_docs": [],
+        }
+    elif action == "refuse":
+        return {
+            "answer": "I am a Legal Advisor AI specializing in Indian law. "
                       "I can only answer questions related to Indian legal acts, "
                       "rights, and court judgements. Please ask a legal question.",
-                "query_source": "out_of_scope",
-                "context":"",
-                "retrieved_docs":[]
-
-            }
-        else:
-            context=web_search_fallback(question)
-            if len(context) > MAX_CONTEXT_CHARS:
-                context= context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
-            return {
-                "answer": context,
-                "query_source": "web_search",
-                "context":context,
-                "retrieved_docs":[]
-            }
+            "query_source": "out_of_scope",
+            "context": "",
+            "retrieved_docs": [],
+        }
+    else:
+        context = web_search_fallback(question)
+        if len(context) > MAX_CONTEXT_CHARS:
+            context = context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
+        return {
+            "query_source": "web_search",
+            "context": context,
+            "retrieved_docs": [],
+        }
 
 
 def node_check_threshold(state: LegalAdvisorState) -> dict:
