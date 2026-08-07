@@ -14,6 +14,8 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
 import uuid
+import string
+
 
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage
@@ -51,6 +53,7 @@ if not GROQ_KEY:
     raise RuntimeError("GROQ_API_KEY is not set. Check your .env / environment variables.")
 
 SIMILARITY_THRESHOLD = 0.35 
+MAX_CONTEXT_CHARS = 4000  # ≈1000 tokens — leaves headroom for system prompt + history + question under the TPM cap
 
 class LegalAdvisorState(TypedDict):
     original_question:   str
@@ -63,6 +66,8 @@ class LegalAdvisorState(TypedDict):
     query_source:        str
     chat_history:        list
     answer:              str
+    planned_action:      str
+
 # Groundedness detection
 # When similarity search returns a false-positive chunk above the threshold,
 # the LLM correctly says "I couldn't find this in the context" — but
@@ -277,6 +282,37 @@ If the question is already standalone, return it exactly as-is."""),
 
 rephrase_chain = REPHRASE_PROMPT | llm | StrOutputParser()
 
+PLANNER_SYSTEM = """You are a routing agent for an Indian legal advisor system.
+A user's question scored in an ambiguous range against the legal knowledge base —
+not clearly answerable, not clearly out of scope.
+
+Decide the single best next action:
+- "web_search" — the question is legal in nature and specific enough that a web
+  search for current/general legal information would help.
+- "clarify" — the question is broad or vague, but IS about law or legal concepts
+  in general (even without naming a specific Act, country, or section).
+  Example: "what is the law", "tell me about my rights", "how does a court work"
+  — these are legal topics, just too broad to answer usefully. Ask ONE short
+  question to narrow the scope (e.g. which country's law, which specific topic).
+- "refuse" — the question has NOTHING to do with law or legal topics at all
+  (e.g. cooking, sports scores, general trivia).
+
+When in doubt between "clarify" and "refuse": if the question mentions law,
+rights, courts, legal concepts, or anything justice-adjacent — even vaguely —
+choose "clarify", not "refuse".
+
+Respond with EXACTLY one line in this format, nothing else:
+ACTION: <web_search|clarify|refuse>
+REASON: <one short sentence>
+CLARIFYING_QUESTION: <only if ACTION is clarify, otherwise leave blank>
+"""
+
+planner_prompt = ChatPromptTemplate.from_messages([
+    ("system", PLANNER_SYSTEM),
+    ("human", "{question}")
+])
+planner_chain = planner_prompt | llm | StrOutputParser()
+
 def init_db():
     conn= sqlite3.connect(DB_SESSION_PATH)
     cursor= conn.cursor()
@@ -456,6 +492,65 @@ def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
     
     return {"retrieved_docs": docs, "similarity_score": highest_score}
 
+def _is_ambiguous(score:float, question:str)->bool :
+    """ Fast , cheap check for whether this case is worth an LLM planning call.
+    Clear high/low scores skip straight to the deterministic path- only the genuinely uncertain middle
+      , or suspiciously short/vague questions, 
+      trigger the more expensive LLM judgment call."""
+    AMBIGUOUS_LOW=SIMILARITY_THRESHOLD-0.05
+    AMBIGUOUS_HIGH = SIMILARITY_THRESHOLD+0.10
+    if AMBIGUOUS_LOW <= score<=AMBIGUOUS_HIGH :
+        return True
+    cleaned = question.translate(str.maketrans("", "", string.punctuation))
+    if len(cleaned.strip().split()) <= 4:
+        return True
+    return False
+async def node_plan_action(state: LegalAdvisorState)->dict :
+    """"Only reached for the ambiguous cases(see _is_ambiguous). Uses LLM judgment
+    instead of the deterministic threshold/keywords check for the genuinely uncertain 
+    questions- including a NEW capability the old system never had : asking a clarifying question 
+     insted of forcing a weak answer. """
+
+    question= state["standalone_question"]
+    result= await call_with_retry(planner_chain, {"question":question})
+    print(f"DEBUG planner raw output:\n{result}\n---")
+    action= "web search"
+    clarifying_q= ""
+    for line in result.split("\n"):
+        if line.startswith("ACTION"):
+            action= line.replace("ACTION:","").strip().lower()
+        elif line.startswith("CLARIFYING_QUESTION"):
+            clarifying_q= line.replace("CLARIFYING_QUESTION:","").strip()
+        if action=="clarify" and clarifying_q:
+            return {
+                "answer": clarifying_q,
+                "query_source": "clarification",
+                "context":"",
+                "retrieved_docs":[]
+
+            }
+        elif action=="refuse":
+            return {
+                "answer": "I am a Legal Advisor AI specializing in Indian law. "
+                      "I can only answer questions related to Indian legal acts, "
+                      "rights, and court judgements. Please ask a legal question.",
+                "query_source": "out_of_scope",
+                "context":"",
+                "retrieved_docs":[]
+
+            }
+        else:
+            context=web_search_fallback(question)
+            if len(context) > MAX_CONTEXT_CHARS:
+                context= context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
+            return {
+                "answer": context,
+                "query_source": "web_search",
+                "context":context,
+                "retrieved_docs":[]
+            }
+
+
 def node_check_threshold(state: LegalAdvisorState) -> dict:
     """
     Check similarity score and route to correct source:
@@ -467,10 +562,8 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
     standalone_question = state["standalone_question"]
     docs = state["retrieved_docs"]
 
-    # Constants
-    MAX_CONTEXT_CHARS = 4000
-
-    if similarity_score >= SIMILARITY_THRESHOLD:
+    if similarity_score >= SIMILARITY_THRESHOLD and not _is_ambiguous(similarity_score, standalone_question):
+        print(f"DEBUG: score={similarity_score:.4f}, ambiguous={_is_ambiguous(similarity_score, standalone_question)}")
         context = "\n\n---\n\n".join(doc.page_content for doc in docs)
         if len(context) > MAX_CONTEXT_CHARS:
             context = context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
@@ -478,6 +571,10 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
             "context": context,
             "query_source": "vector_search",
             "retrieved_docs": docs,
+        }
+    if _is_ambiguous(similarity_score, standalone_question):
+        return{
+            "query_source":"needs_planning",
         }
 
     else:
@@ -556,6 +653,7 @@ def build_graph():
     graph.add_node("rephrase_query",     node_rephrase_query)
     graph.add_node("retrieve_chunks",    node_retrieve_chunks)
     graph.add_node("check_threshold",    node_check_threshold)
+    graph.add_node("plan_action",        node_plan_action)   
     graph.add_node("generate_answer",    node_generate_answer)
     graph.add_node("save_history",       node_save_history)
 
@@ -574,7 +672,17 @@ def build_graph():
             "vector_search":"generate_answer",
             "web_search": "generate_answer",   
             "out_of_scope": "save_history",
+            "needs_planning":  "plan_action", 
         }
+    )
+    graph.add_conditional_edges(
+    "plan_action",
+    lambda state: state["query_source"],
+    {
+        "web_search":     "generate_answer",
+        "out_of_scope":   "save_history",
+        "clarification":  "save_history",           # NEW — clarifying question is the final answer
+    }
     )
     graph.add_edge("generate_answer", "save_history")
     graph.add_edge("save_history",    END)
