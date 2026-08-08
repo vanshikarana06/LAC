@@ -67,6 +67,8 @@ class LegalAdvisorState(TypedDict):
     chat_history:        list
     answer:              str
     planned_action:      str
+    critic_retries:      int
+    needs_retry:         bool
 
 # Groundedness detection
 # When similarity search returns a false-positive chunk above the threshold,
@@ -313,6 +315,26 @@ planner_prompt = ChatPromptTemplate.from_messages([
 ])
 planner_chain = planner_prompt | llm | StrOutputParser()
 
+CRITIC_SYSTEM = """You are reviewing an AI-generated legal answer for groundedness.
+
+Question: {question}
+Context provided to the AI:
+{context}
+
+AI's Answer:
+{answer}
+
+Check: does the answer state any specific facts, section numbers, or case
+outcomes that are NOT actually present in the context above?
+
+Respond in EXACTLY this format, nothing else:
+CONFIDENCE: <high|low>
+ISSUE: <one short sentence describing the problem, or "none" if confidence is high>
+"""
+
+critic_prompt = ChatPromptTemplate.from_messages([("system", CRITIC_SYSTEM)])
+critic_chain = critic_prompt | llm | StrOutputParser()
+
 def init_db():
     conn= sqlite3.connect(DB_SESSION_PATH)
     cursor= conn.cursor()
@@ -482,14 +504,14 @@ async def node_rephrase_query(state: LegalAdvisorState)->dict:
 
 def node_retrieve_chunks(state: LegalAdvisorState) -> dict:
     global vectordb
-    
     if vectordb is None:
         raise Exception("VectorDB is not initialized. Cannot retrieve chunks.")
-    standalone = state["standalone_question"]  
-    docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=6)    
+
+    standalone = state["standalone_question"]
+    k = 6 if state.get("critic_retries", 0) == 0 else 10   # widen the net on retry
+    docs_with_scores = vectordb.similarity_search_with_relevance_scores(standalone, k=k)
     docs = [doc for doc, score in docs_with_scores]
     highest_score = max([max(score, 0) for doc, score in docs_with_scores], default=0)
-    
     return {"retrieved_docs": docs, "similarity_score": highest_score}
 
 def _is_ambiguous(score:float, question:str)->bool :
@@ -576,15 +598,7 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
     else:
         # Score too low — check if legal question
         if not is_legal_question(standalone_question) and not is_legal_question(state["original_question"]):
-            # Completely off-topic — refuse politely
-            return {
-                "answer": "I am a Legal Advisor AI specializing in Indian law. "
-                          "I can only answer questions related to Indian legal acts, "
-                          "rights, and court judgements. Please ask a legal question.",
-                "query_source": "out_of_scope",
-                "context": "",
-                "retrieved_docs": [],
-            }
+            return {"query_source": "needs_planning"} 
 
         # Legal but not in DB → web search
         print("Below threshold → web search")
@@ -628,7 +642,42 @@ async def node_generate_answer(state: LegalAdvisorState) -> dict:
     if not is_grounded_answer(answer):
         result["retrieved_docs"] = []
     return result
-  
+CRITIC_RETRY_LIMIT = 1  # caps retries — prevents infinite loops, and controls cost
+
+async def node_critic_review(state: LegalAdvisorState) -> dict:
+    """Only critiques answers where evidence already suggests risk:
+    web_search (measured 0.500 faithfulness via RAGAS) or low-confidence
+    vector_search. Skips the LLM call entirely otherwise — zero added
+    cost for the common, already-reliable case."""
+    query_source = state["query_source"]
+    is_risky = (query_source == "web_search") or \
+               (query_source == "vector_search" and state["similarity_score"] < SIMILARITY_THRESHOLD + 0.10)
+
+    if not is_risky:
+        return {"needs_retry": False}
+
+    if state.get("critic_retries", 0) >= CRITIC_RETRY_LIMIT:
+        return {"needs_retry": False}   # already retried once — accept current answer
+
+    result = await call_with_retry(critic_chain, {
+        "question": state["original_question"],
+        "context": state["context"][:2000],
+        "answer": state["answer"],
+    })
+    print(f"DEBUG critic output:\n{result}\n---")
+
+    confidence = "high"
+    for line in result.split("\n"):
+        if line.startswith("CONFIDENCE"):
+            confidence = line.replace("CONFIDENCE:", "").strip().lower()
+
+    if confidence == "low":
+        return {
+            "needs_retry": True,
+            "critic_retries": state.get("critic_retries", 0) + 1,
+        }
+    return {"needs_retry": False}
+ 
 def node_save_history(state: LegalAdvisorState)->dict:
     """
     Save the conversation history to sqlite for this session
@@ -651,6 +700,8 @@ def build_graph():
     graph.add_node("check_threshold",    node_check_threshold)
     graph.add_node("plan_action",        node_plan_action)   
     graph.add_node("generate_answer",    node_generate_answer)
+    graph.add_node("critic_review", node_critic_review)   # NEW
+
     graph.add_node("save_history",       node_save_history)
 
     #entry point 
@@ -661,6 +712,8 @@ def build_graph():
     graph.add_edge("classify_question", "rephrase_query")
     graph.add_edge("rephrase_query",    "retrieve_chunks")
     graph.add_edge("retrieve_chunks",   "check_threshold")
+    graph.add_edge("generate_answer", "critic_review")
+
     graph.add_conditional_edges(
         "check_threshold",
         lambda state: state["query_source"],
@@ -672,15 +725,22 @@ def build_graph():
         }
     )
     graph.add_conditional_edges(
-    "plan_action",
-    lambda state: state["query_source"],
-    {
-        "web_search":     "generate_answer",
-        "out_of_scope":   "save_history",
-        "clarification":  "save_history",           # NEW — clarifying question is the final answer
-    }
-    )
-    graph.add_edge("generate_answer", "save_history")
+        "plan_action",
+        lambda state: state["query_source"],
+        {
+          "web_search":     "generate_answer",
+          "out_of_scope":   "save_history",
+          "clarification":  "save_history",           # NEW — clarifying question is the final answer
+        }
+        )
+    graph.add_conditional_edges(
+       "critic_review",
+        lambda state: "retry" if state.get("needs_retry") else "accept",
+        {
+        "retry":  "retrieve_chunks",   # loops back — a real cycle in the graph
+        "accept": "save_history",
+        }
+     )
     graph.add_edge("save_history",    END)
 
     return graph.compile()
