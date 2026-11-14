@@ -1,21 +1,18 @@
-import sys
-sys.stdout.reconfigure(line_buffering=True)
-print("DEBUG: API File Loaded Successfully")
 from contextlib import asynccontextmanager
 import os
 import re
 import time
 import asyncio
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, Any
 import uuid
 import string
-
 
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage
@@ -27,7 +24,6 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder 
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
 
 import groq as groq_sdk
 import sqlite3
@@ -37,6 +33,9 @@ import json
 from fastapi.responses import StreamingResponse 
 
 from langsmith import traceable
+
+logger = logging.getLogger("legal_advisor")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 load_dotenv()
 
@@ -52,7 +51,7 @@ if not GROQ_KEY:
     # Fail fast at startup instead of failing confusingly on the first request.
     raise RuntimeError("GROQ_API_KEY is not set. Check your .env / environment variables.")
 
-SIMILARITY_THRESHOLD = 0.35 
+SIMILARITY_THRESHOLD = 0.32 
 MAX_CONTEXT_CHARS = 4000  # ≈1000 tokens — leaves headroom for system prompt + history + question under the TPM cap
 
 class LegalAdvisorState(TypedDict):
@@ -92,24 +91,8 @@ def is_grounded_answer(answer: str) -> bool:
         return False
     return not NOT_FOUND_PATTERNS.search(answer)
 
-def get_working_model():
-    client    = groq_sdk.Groq(api_key=GROQ_KEY)
-    available = [m.id for m in client.models.list().data]
-    preferred = [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "llama3-8b-8192",
-        "mixtral-8x7b-32768",
-    ]
-    for m in preferred:
-        if m in available:
-            print(f" Using model: {m}")
-            return m
-    fallback = available[0]
-    print(f" Falling back to: {fallback}")
-    return fallback
-
-MODEL = get_working_model()
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+MODEL = DEFAULT_GROQ_MODEL
 
 
 embeddings = HuggingFaceEndpointEmbeddings(
@@ -126,6 +109,10 @@ llm = ChatGroq(
     max_tokens=1024, 
     model_kwargs={"frequency_penalty": 0.4},  
 )
+
+# Vector store and retriever (initialized in lifespan)
+vectordb: Optional[Chroma] = None
+retriever: Optional[Any] = None
 
 # SCENARIO DETECTOR
 # Classifies every incoming question into one of 4 types
@@ -448,24 +435,30 @@ def web_search_fallback(question: str) -> str:
         "indiacode.nic.in",
     ]
 
-    tool = TavilySearch(
-        max_results=5,
-        api_key=TAVILY_KEY,
-        include_domains=INDIAN_LEGAL_DOMAINS,
-        country="india",
-    )
-    print("Performing web search for:", query)
-    results = tool.invoke({"query": query})
+    try:
+        tool = TavilySearch(
+            max_results=5,
+            api_key=TAVILY_KEY,
+            include_domains=INDIAN_LEGAL_DOMAINS,
+            country="india",
+        )
+        logger.info("Performing web search for: %s", query)
+        results = tool.invoke({"query": query})
+    except Exception as e:
+        logger.error("Web search failed for query %r: %s", query, e)
+        return "Web search is currently unavailable. Please try again later or consult official Indian legal sources directly."
 
     if isinstance(results, str):
+        logger.warning("Tavily returned string response instead of dict: %s", results)
         return f"No relevant results found from Indian legal sources for this query. ({results})"
     
-    if "results" not in results or not results["results"]:
+    if not isinstance(results, dict) or "results" not in results or not results["results"]:
         return "No relevant results found from Indian legal sources for this query."
 
     results_text = "Web Search Results (Indian Legal Sources):\n\n" + "\n\n---\n\n".join(
-        f"{res['content']}\nSource: {res['url']}"
-        for res in results['results']    )
+        f"{res.get('content', '')}\nSource: {res.get('url', '')}"
+        for res in results['results'] if isinstance(res, dict)
+    )
     return results_text
     
 # langraph nodes
@@ -499,6 +492,7 @@ async def node_rephrase_query(state: LegalAdvisorState)->dict:
         })
     else:
         standalone = original_question
+    logger.debug("standalone_question: %r", standalone)
     return {"standalone_question": standalone,
             "chat_history": chat_history}
 
@@ -530,7 +524,7 @@ def _is_ambiguous(score:float, question:str)->bool :
 async def node_plan_action(state: LegalAdvisorState) -> dict:
     question = state["standalone_question"]
     result = await call_with_retry(planner_chain, {"question": question})
-    print(f"DEBUG planner raw output:\n{result}\n---")
+    logger.debug("planner raw output: %s", result)
 
     action = "web_search"
     clarifying_q = ""
@@ -581,7 +575,7 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
     docs = state["retrieved_docs"]
 
     if similarity_score >= SIMILARITY_THRESHOLD and not _is_ambiguous(similarity_score, standalone_question):
-        print(f"DEBUG: score={similarity_score:.4f}, ambiguous={_is_ambiguous(similarity_score, standalone_question)}")
+        logger.debug("Score %f >= %f and not ambiguous", similarity_score, SIMILARITY_THRESHOLD)
         context = "\n\n---\n\n".join(doc.page_content for doc in docs)
         if len(context) > MAX_CONTEXT_CHARS:
             context = context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
@@ -601,7 +595,7 @@ def node_check_threshold(state: LegalAdvisorState) -> dict:
             return {"query_source": "needs_planning"} 
 
         # Legal but not in DB → web search
-        print("Below threshold → web search")
+        logger.debug("Below threshold (%f) -> web search fallback", similarity_score)
         context = web_search_fallback(standalone_question)
         if len(context) > MAX_CONTEXT_CHARS:
             context = context[:MAX_CONTEXT_CHARS] + "\n\n[context truncated to fit model token limit]"
@@ -631,6 +625,7 @@ async def node_generate_answer(state: LegalAdvisorState) -> dict:
             messages.append(("ai", msg.content))
     messages.append(("human", original_question))
 
+    logger.debug("context fed to generate_answer: %s", context[:1500])
     prompt = ChatPromptTemplate.from_messages(messages)
     chain  = prompt | llm | StrOutputParser()
     answer = await call_with_retry(chain, {})
@@ -644,16 +639,22 @@ async def node_generate_answer(state: LegalAdvisorState) -> dict:
     return result
 CRITIC_RETRY_LIMIT = 1  # caps retries — prevents infinite loops, and controls cost
 
+def is_critic_risky(query_source: str, similarity_score: float) -> bool:
+    """Evaluates whether an answer requires critic review:
+    web_search (measured 0.500 faithfulness via RAGAS) or low-confidence vector_search."""
+    return (query_source == "web_search") or (
+        query_source == "vector_search" and similarity_score < (SIMILARITY_THRESHOLD + 0.10)
+    )
+
 async def node_critic_review(state: LegalAdvisorState) -> dict:
     """Only critiques answers where evidence already suggests risk:
     web_search (measured 0.500 faithfulness via RAGAS) or low-confidence
     vector_search. Skips the LLM call entirely otherwise — zero added
     cost for the common, already-reliable case."""
     query_source = state["query_source"]
-    is_risky = (query_source == "web_search") or \
-               (query_source == "vector_search" and state["similarity_score"] < SIMILARITY_THRESHOLD + 0.10)
+    similarity_score = state.get("similarity_score", 0.0)
 
-    if not is_risky:
+    if not is_critic_risky(query_source, similarity_score):
         return {"needs_retry": False}
 
     if state.get("critic_retries", 0) >= CRITIC_RETRY_LIMIT:
@@ -664,7 +665,7 @@ async def node_critic_review(state: LegalAdvisorState) -> dict:
         "context": state["context"][:2000],
         "answer": state["answer"],
     })
-    print(f"DEBUG critic output:\n{result}\n---")
+    logger.debug("critic output: %s", result)
 
     confidence = "high"
     for line in result.split("\n"):
@@ -757,8 +758,27 @@ async def lifespan(app: FastAPI):
     init_db()
     cleanup_old_sessions(days=30)
 
-    #  Initialize global resources
-    global embeddings, vectordb, retriever
+    # Initialize global resources
+    global embeddings, vectordb, retriever, MODEL, llm
+
+    # Model verification inside lifespan — validate against client.models.list()
+    try:
+        client = groq_sdk.Groq(api_key=GROQ_KEY)
+        available = [m.id for m in client.models.list().data]
+        if MODEL not in available:
+            chat_models = [
+                m for m in available
+                if not any(excluded in m.lower() for excluded in ["whisper", "orpheus", "prompt-guard", "tts", "guard"])
+            ]
+            raise RuntimeError(
+                f"Configured GROQ_MODEL '{MODEL}' is not available in Groq. "
+                f"Available chat-capable models: {', '.join(chat_models)}"
+            )
+        logger.info(f"Verified Groq model: {MODEL}")
+    except RuntimeError:
+        raise
+    except Exception as e:
+        logger.warning(f"Could not reach Groq to verify models at startup ({e}). Continuing with: {MODEL}")
 
     # Embeddings — environment aware
     if os.getenv("RENDER"):
@@ -767,11 +787,11 @@ async def lifespan(app: FastAPI):
             model="sentence-transformers/all-MiniLM-L6-v2",
             huggingfacehub_api_token=HF_TOKEN   # use module-level constant
         )
-        print("Using HuggingFace Endpoint Embeddings (API)")
+        logger.info("Using HuggingFace Endpoint Embeddings (API)")
     else:
         from langchain_huggingface import HuggingFaceEmbeddings
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        print("Using local HuggingFace Embeddings")
+        logger.info("Using local HuggingFace Embeddings")
 
     try:
         vectordb  = Chroma(persist_directory=DB_PATH, embedding_function=embeddings)
@@ -779,14 +799,14 @@ async def lifespan(app: FastAPI):
             search_type="mmr",
             search_kwargs={"k": 6, "fetch_k": 15}
         )
-        print(f"ChromaDB loaded: {vectordb._collection.count()} chunks")
+        logger.info(f"ChromaDB loaded: {vectordb._collection.count()} chunks")
     except Exception as e:
-        print(f"CRITICAL: Failed to initialize ChromaDB: {e}")
+        logger.error(f"CRITICAL: Failed to initialize ChromaDB: {e}")
         vectordb  = None
         retriever = None
 
     yield   # ← server handles requests here
-    print("Server shutting down cleanly.")
+    logger.info("Server shutting down cleanly.")
 
 # FastAPI App
 app = FastAPI(title="Legal Advisor AI", lifespan=lifespan)   
@@ -1036,6 +1056,7 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
         }
  
         full_answer = ""
+        generate_answer_attempts = 0 
  
         try:
             async for event in legal_graph.astream_events(state, version="v2"):
@@ -1043,21 +1064,31 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
                 node_name = event.get("name", "")
  
                 if kind == "on_chat_model_stream":
-                        # Every LLM call in the graph (rephrase_query AND generate_answer)
-                        # fires on_chat_model_stream. Without filtering by node, rephrase
-                        # tokens leak into the visible answer, sometimes even replacing it
-                        # entirely (see: gratuity/landlord test cases). Only stream tokens
-                        # that actually came from the final-answer node.
-                        node_source = event.get("metadata", {}).get("langgraph_node")
-                        if node_source == "generate_answer":
-                           content = event["data"]["chunk"].content
-                           if content:
-                             full_answer += content
-                             yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
+                    # Every LLM call in the graph (rephrase_query AND generate_answer)
+                    # fires on_chat_model_stream. Without filtering by node, rephrase
+                    # tokens leak into the visible answer, sometimes even replacing it
+                    # entirely (see: gratuity/landlord test cases). Only stream tokens
+                    # that actually came from the final-answer node.
+                    node_source = event.get("metadata", {}).get("langgraph_node")
+                    if node_source == "generate_answer":
+                        content = event["data"]["chunk"].content
+                        if content:
+                            full_answer += content
+                            yield f"data: {json.dumps({'type': 'token', 'content': content})}\n\n"
  
                 elif kind == "on_chain_start":
+                    if node_name == "generate_answer":
+                        generate_answer_attempts += 1
+                        if generate_answer_attempts > 1:
+                            # A retry just started — the critic rejected the previous attempt.
+                            # Tokens already streamed can't be un-sent, so tell the frontend
+                            # to visually clear the bubble, and reset our own accumulator so
+                            # the final sources/groundedness check reflects only the
+                            # accepted retry answer, not the rejected first attempt.
+                            full_answer = ""
+                            yield f"data: {json.dumps({'type': 'reset'})}\n\n"
                     yield f"data: {json.dumps({'type': 'status', 'node': node_name})}\n\n"
- 
+                     
                 elif kind == "on_chain_end":
                     output = event["data"].get("output", {})
  
@@ -1069,7 +1100,7 @@ async def ask_stream(question: str, session_id: Optional[str] = None):
  
                     if isinstance(output, dict):
                         state.update(output)
- 
+            logger.debug("full_answer generated (length %d)", len(full_answer))
             # out_of_scope sets "answer" directly in node_check_threshold and
             # never calls the LLM, so no on_chat_model_stream events fire and
             # no 'token' SSE event is sent by the loop above. Emit the

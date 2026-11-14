@@ -24,7 +24,7 @@ User Question
 [node_check_threshold]     — Score-based routing
       ↓
    ┌───────────────────────────────────────────────────────┐
-   │  score ≥ 0.35            score < 0.35, ambiguous       │
+   │  score ≥ 0.32            score < 0.32, ambiguous       │
    │  📚 Legal DB             or fails keyword gate         │
    │       ↓                  🧭 [node_plan_action]         │
    │       ↓                  LLM decides: web_search /     │
@@ -45,12 +45,12 @@ User Question
 
 | Route | Condition | Source Badge |
 |---|---|---|
-| ChromaDB | similarity score ≥ 0.35, unambiguous | Legal DB |
+| ChromaDB | similarity score ≥ 0.32, unambiguous | Legal DB |
 | Agentic planner → web search | ambiguous score, or vague/short question | Web Search |
 | Agentic planner → clarification | question is legal-adjacent but too vague to answer usefully | Clarification |
 | Agentic planner → refusal | question has nothing to do with law | Out of scope |
 
-*Threshold (0.35) determined empirically by analyzing score distribution across representative queries — legal questions scored 0.45–0.55, out-of-scope scored below 0.38.*
+*Threshold (0.32) determined empirically by analyzing score distribution across representative queries — legal questions scored 0.40–0.55, out-of-scope scored below 0.30.*
 
 ---
 
@@ -139,8 +139,8 @@ Lists past conversations (via `/sessions`) with a preview of the first question;
 | Component | Technology |
 |---|---|
 | Backend | FastAPI (Python) |
-| AI Workflow | LangGraph (7-node graph + planning/critic cycle) |
-| LLM | Groq — LLaMA 3.1 8B Instant |
+| AI Workflow | LangGraph (9-node stateful workflow with self-correction cycle) |
+| LLM | Groq — openai/gpt-oss-20b (configurable via GROQ_MODEL) |
 | Embeddings | HuggingFace Inference API (all-MiniLM-L6-v2) |
 | Vector Store | ChromaDB (similarity search) |
 | Web Search | Tavily API |
@@ -181,6 +181,7 @@ cp .env.example .env
 GROQ_API_KEY=gsk_...
 TAVILY_API_KEY=tvly_...
 HF_TOKEN=hf_...
+GROQ_MODEL=openai/gpt-oss-20b    # Note: On Render, configure this in Environment Variables dashboard
 DB_PATH=data_vector_db
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_API_KEY=ls__...
