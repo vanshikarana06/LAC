@@ -21,6 +21,10 @@ import asyncio
 import sys
 import os
 import uuid
+import argparse
+import datetime
+import json
+import subprocess
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -115,6 +119,11 @@ async def build_eval_dataset():
 
 
 async def main():
+    parser = argparse.ArgumentParser(description="Run RAGAS evaluation over LAC pipeline")
+    parser.add_argument("--out", type=str, default="ragas_results.csv", help="Path to output CSV")
+    parser.add_argument("--splitter-name", type=str, default="structure-aware", help="Splitter variant name")
+    args, _ = parser.parse_known_args()
+
     # vectordb/retriever are normally created by FastAPI's lifespan() when
     # uvicorn starts the app. This script never starts uvicorn, so we run
     # the same startup logic manually before touching the graph.
@@ -169,8 +178,32 @@ async def main():
             lambda q: "should_refuse" if q in should_refuse_texts else "answerable"
         )
 
-        output_path = "ragas_results.csv"
+        output_path = args.out
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
         df.to_csv(output_path, index=False)
+
+        # Write sidecar JSON recording run metadata
+        try:
+            git_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        except Exception:
+            git_sha = "unknown"
+
+        from src.api.main import vectordb
+        chunk_count = vectordb._collection.count() if vectordb else 0
+
+        sidecar_path = os.path.splitext(output_path)[0] + ".json"
+        sidecar_data = {
+            "generation_model": llm.model_name,
+            "judge_model": eval_judge_llm.model_name,
+            "judge_max_tokens": 4096,
+            "date": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "git_sha": git_sha,
+            "chunk_count": chunk_count,
+            "splitter_name": args.splitter_name,
+            "db_path": os.getenv("DB_PATH", "data_vector_db"),
+        }
+        with open(sidecar_path, "w", encoding="utf-8") as f:
+            json.dump(sidecar_data, f, indent=2)
 
         print("\nActual result columns:", df.columns.tolist())
 
