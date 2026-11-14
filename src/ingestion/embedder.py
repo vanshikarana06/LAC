@@ -2,7 +2,7 @@ import os
 import re
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.documents import Document
 import dotenv
@@ -11,9 +11,10 @@ dotenv.load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
  
 class LegalIngestor:
-    def __init__(self, data_path, db_path):
+    def __init__(self, data_path="data_raw", db_path="data_vector_db", old_splitter=False):
         self.data_path = data_path
         self.db_path = db_path
+        self.old_splitter = old_splitter
         self.embeddings = HuggingFaceEndpointEmbeddings(
              model="sentence-transformers/all-MiniLM-L6-v2",
              huggingfacehub_api_token=HF_TOKEN
@@ -49,26 +50,40 @@ class LegalIngestor:
         print(f"\n Loaded {len(cleaned_documents)} pages from PDFs")
  
         #  Chunking
-        # Larger chunks = more context per retrieval = better answers
-        splitter = RecursiveCharacterTextSplitter(
-                  chunk_size=1500,        
-                  chunk_overlap=200,      
-                  separators=[
-                      r"\n\d{1,3}[A-Z]?\.\s",
-                      "\nSection", "\nSECTION",
-                      "\nArticle", "\nARTICLE",
-                      "\nClause", "\nCLAUSE",
-                      "\n\n", "\n", ". ", " "
-                  ],
-                  is_separator_regex=True,
-                  keep_separator="start",
-)
+        if self.old_splitter:
+            print(" Using OLD fixed splitter (no regex, clause boundary fragmentation)")
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1500,
+                chunk_overlap=200,
+                separators=[
+                    "\nSection", "\nSECTION",
+                    "\nArticle", "\nARTICLE",
+                    "\nClause", "\nCLAUSE",
+                    "\n\n", "\n", ". ", " "
+                ],
+                is_separator_regex=False,
+            )
+        else:
+            print(" Using NEW structure-aware splitter (regex section boundaries)")
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1500,        
+                chunk_overlap=200,      
+                separators=[
+                    r"\n\d{1,3}[A-Z]?\.\s",
+                    "\nSection", "\nSECTION",
+                    "\nArticle", "\nARTICLE",
+                    "\nClause", "\nCLAUSE",
+                    "\n\n", "\n", ". ", " "
+                ],
+                is_separator_regex=True,
+                keep_separator="start",
+            )
  
         chunks = splitter.split_documents(cleaned_documents)
         print(f" Split into {len(chunks)} chunks")
  
         # Build Vector DB 
-        print("\n Building vector database (this may take a few minutes)...")
+        print(f"\n Building vector database at {self.db_path}...")
         Chroma.from_documents(
             documents=chunks,
             embedding=self.embeddings,
@@ -79,5 +94,12 @@ class LegalIngestor:
  
  
 if __name__ == "__main__":
-    ingestor = LegalIngestor(data_path="data_raw", db_path="data_vector_db")
+    import argparse
+    parser = argparse.ArgumentParser(description="Ingest PDFs into ChromaDB")
+    parser.add_argument("--db-path", default=os.getenv("DB_PATH", "data_vector_db"), help="Destination directory for ChromaDB")
+    parser.add_argument("--data-path", default="data_raw", help="Directory containing raw PDFs")
+    parser.add_argument("--old-splitter", action="store_true", help="Use legacy splitter without section regex")
+    args = parser.parse_args()
+
+    ingestor = LegalIngestor(data_path=args.data_path, db_path=args.db_path, old_splitter=args.old_splitter)
     ingestor.process_pdfs()
