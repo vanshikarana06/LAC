@@ -15,10 +15,15 @@ class LegalIngestor:
         self.data_path = data_path
         self.db_path = db_path
         self.old_splitter = old_splitter
-        self.embeddings = HuggingFaceEndpointEmbeddings(
-             model="sentence-transformers/all-MiniLM-L6-v2",
-             huggingfacehub_api_token=HF_TOKEN
+        if os.getenv("RENDER"):
+            self.embeddings = HuggingFaceEndpointEmbeddings(
+                model="sentence-transformers/all-MiniLM-L6-v2",
+                huggingfacehub_api_token=HF_TOKEN
             )
+        else:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            from langchain_huggingface import HuggingFaceEmbeddings
+            self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
  
     def clean_text(self, text):
         # Remove multiple newlines
@@ -84,11 +89,19 @@ class LegalIngestor:
  
         # Build Vector DB 
         print(f"\n Building vector database at {self.db_path}...")
-        Chroma.from_documents(
-            documents=chunks,
-            embedding=self.embeddings,
-            persist_directory=self.db_path
-        )
+        batch_size = 500
+        vector_store = None
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i : i + batch_size]
+            print(f" Embedding batch {i // batch_size + 1} ({i + 1} to {min(i + batch_size, len(chunks))} of {len(chunks)} chunks)...")
+            if vector_store is None:
+                vector_store = Chroma.from_documents(
+                    documents=batch,
+                    embedding=self.embeddings,
+                    persist_directory=self.db_path
+                )
+            else:
+                vector_store.add_documents(batch)
         print(" Success! Knowledge base is built and persistent.")
         print(f"   Chunks stored: {len(chunks)}")
  

@@ -1,0 +1,62 @@
+DB: data_vector_db | chunks: 3911
+================================================================================
+--------------------------------------------------------------------------------
+Q1: What is the punishment for theft under IPC?
+GROUND TRUTH:
+Under Section 379 of the Indian Penal Code, 1860, whoever commits theft shall be punished with imprisonment of either description for a term which may extend to three years, or with fine, or with both.
+
+TOP 3 CHUNKS:
+  [1] 0.6273 | the_code_of_criminal_procedure,_1973.pdf | p.247
+      III. CHARGES FOR THEFT AFTER PREVIOUS CONVICTION    I, ( name and office of Magistrate, etc.)  hereby charge you (name of accused person) as follows: —    That you, on or about the day of , at , commi tted  theft, and thereby committed an offence p unishable under section 379 of the Indian Penal Cod...
+  [2] 0.5887 | the_code_of_criminal_procedure,_1973.pdf | p.246
+      punishable under section 302 of the Indian Penal Code, and within the cognizance of the Court of  Session.  Secondly—That you, on or about the day of , at , by causing  the death of , committed culpable homicide not amounting to murder, and thereby  committed an offence punishable under section 304 ...
+  [3] 0.5595 | THE-INDIAN-PENAL-CODE-1860.pdf | p.26
+      75.  Enhanced punishment for certain offence under Chapter XII or Chapter  XVII after previous conviction.  2*[75. Enhanced punishment for certain offences under Chapter  XII or Chapter XVII after previous conviction.--Whoever, having been  convicted,- (a) by a Court in 3*[India], of an offence puni...
+--------------------------------------------------------------------------------
+Q2: What is maternity leave duration in India?
+GROUND TRUTH:
+Under the Maternity Benefit Act, 1961, a woman is entitled to 26 weeks of maternity leave for her first two children. For a woman with two or more surviving children, the entitlement is 12 weeks, of which not more than 6 weeks may be taken before the expected delivery date.
+
+TOP 3 CHUNKS:
+  [1] 0.4535 | THE MATERNITY BENEFIT ACT.pdf | p.4
+      Provided that the qualifying period of 1[eighty days] aforesaid shall not apply to a woman who has  immigrated into the State of Assam and was pregnant at the time of the immigration.  Explanation.—For the purpose of calculating under t his sub-section the days on which a woman has  actually worked ...
+  [2] 0.4266 | THE MATERNITY BENEFIT ACT.pdf | p.5
+      6. Notice of claim for maternity benefit and paymen t thereof.— (1) Any woman employed in an  establishment and entitled to maternity benefit under the provisions of this Act may give notice in writing  in such form as may be prescribed, to her employer, stating that her maternity benefit and any ot...
+  [3] 0.4060 | THE MATERNITY BENEFIT ACT.pdf | p.1
+      THE MATERNITY BENEFIT ACT, 1961  ACT NO. 53 OF 1961  [12 th December , 1961.]  An Act to regulate the employment of women in certain establishments for certain periods before  and after child-birth and to provide for maternity benefit and certain other benefits.  BE it enacted by Parliament in the T...
+--------------------------------------------------------------------------------
+Q3: What is gratuity and who is eligible for it?
+GROUND TRUTH:
+Gratuity is a lump-sum payment made by an employer to an employee under the Payment of Gratuity Act, 1972, as a reward for continuous service. An employee is eligible after completing at least 5 years of continuous service with the same employer, typically paid on retirement, resignation, or death.
+
+TOP 3 CHUNKS:
+  [1] 0.5968 | THE PAYMENT OF GRATUITY ACT.pdf | p.1
+      THE PAYMENT OF GRATUITY ACT, 1972  ACT NO. 39 OF 1972  [21st August, 1972.]  An Act to provide for a scheme for the payment of gratuity to employees engaged in facto ries,  mines, oilfields, plantations, ports, railway companies, shops or other establishments and for  matters connected therewith or ...
+  [2] 0.5378 | THE PAYMENT OF GRATUITY ACT.pdf | p.4
+      pay gratuity to an employee at the rate of fifteen days’ wages based on the rate of wages last drawn by the  employee concerned:  Provided that in the case of a piece -rated employee, daily wages shall be computed on the average of  the total wages received by him for a period of three months immedi...
+  [3] 0.5356 | THE PAYMENT OF GRATUITY ACT.pdf | p.7
+      7. Determination of the amount of gratuity. —(1) A person who is eligible for payment of gratui ty  under this Act or any person authorised, in writing, to act on his behalf shall send a written application to  the employer, within such time and in such form, as may be prescribed, for payment of suc...
+--------------------------------------------------------------------------------
+Q4: Suppose I am arrested without a warrant — is that legal?
+GROUND TRUTH:
+Under Sections 41 and 41A of the Code of Criminal Procedure, 1973, police may arrest without a warrant in specific circumstances, such as when a person is involved in a cognizable offence, with reasonable grounds. The police must inform the person of the grounds for arrest and their right to bail where applicable.
+
+TOP 3 CHUNKS:
+  [1] 0.6417 | the_code_of_criminal_procedure,_1973.pdf | p.39
+      41. When police may arrest without warrant.—(1) Any police officer may without an order from a  Magistrate and without a warrant, arrest any person—  1[(a) who commits, in the presence of a police officer, a cognizable offence;  (b) against whom a reasonable complaint has been made, or credi ble inf...
+  [2] 0.6275 | the_code_of_criminal_procedure,_1973.pdf | p.40
+      (i) for whose arrest any requisition, whether written or oral, has been received from another  police officer, provided that the requisition specifies the person to be arrested and the offence or other  cause for which the arrest is to be made and it appears therefrom that the person might lawfully ...
+  [3] 0.6155 | the_code_of_criminal_procedure,_1973.pdf | p.48
+      81. Procedure by Magistrate before whom such person arrested is brought. —(1) The Executive Magistrate  or District Superintendent of Police or Commissioner of Police shall, if the person arrested appears to be the person  intended by the Court which issued the warrant, direct his removal in custody...
+--------------------------------------------------------------------------------
+Q5: What are the key differences between a cognizable and non-cognizable offense in India?
+GROUND TRUTH:
+Under the Code of Criminal Procedure, 1973, a cognizable offense allows police to arrest without a warrant and begin investigation without prior court permission. A non-cognizable offense requires a warrant for arrest and police cannot investigate without a magistrate's permission.
+
+TOP 3 CHUNKS:
+  [1] 0.6510 | the_code_of_criminal_procedure,_1973.pdf | p.76
+      150. Information of design to commit cognizable offences .—Every police officer receiving information of a  design to commit any cognizable offence shall communicate such information to the police officer to whom he is  subordinate, and to any other officer whose duty it is to prevent or take cogniz...
+  [2] 0.5909 | the_code_of_criminal_procedure,_1973.pdf | p.39
+      41. When police may arrest without warrant.—(1) Any police officer may without an order from a  Magistrate and without a warrant, arrest any person—  1[(a) who commits, in the presence of a police officer, a cognizable offence;  (b) against whom a reasonable complaint has been made, or credi ble inf...
+  [3] 0.5020 | the_code_of_criminal_procedure,_1973.pdf | p.40
+      (i) for whose arrest any requisition, whether written or oral, has been received from another  police officer, provided that the requisition specifies the person to be arrested and the offence or other  cause for which the arrest is to be made and it appears therefrom that the person might lawfully ...

@@ -19,3 +19,7 @@ data_vector_db/
 data_vector_db_backup/
 data_vector_db_test/
 ragas_results*.csv
+
+data_vector_db_oldsplit/
+data_vector_db_pre_posh/
+

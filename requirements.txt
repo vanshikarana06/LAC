@@ -37,6 +37,7 @@ huggingface-hub==0.36.2
 # DEV / EVAL ONLY — local embeddings branch + run_ragas_eval.py /
 # read_ragas_results.py. Never imported by main.py on Render.
 
+pytest>=8.0.0
 torch==2.3.1
 sentence-transformers==3.0.1
 transformers==4.42.0

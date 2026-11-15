@@ -58,7 +58,7 @@ ANSWERABLE_QUESTIONS = [
             "the Payment of Gratuity Act, 1972, as a reward for continuous service. "
             "An employee is eligible after completing at least 5 years of continuous "
             "service with the same employer, typically paid on retirement, resignation, "
-            "or death. The maximum statutory limit is Rs. 20 lakhs."
+            "or death."
         ),
     },
     {

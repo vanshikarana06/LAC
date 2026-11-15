@@ -95,10 +95,15 @@ DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 MODEL = DEFAULT_GROQ_MODEL
 
 
-embeddings = HuggingFaceEndpointEmbeddings(
-    model="sentence-transformers/all-MiniLM-L6-v2",
-    huggingfacehub_api_token=HF_TOKEN
-)
+if os.getenv("RENDER"):
+    embeddings = HuggingFaceEndpointEmbeddings(
+        model="sentence-transformers/all-MiniLM-L6-v2",
+        huggingfacehub_api_token=HF_TOKEN
+    )
+else:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    from langchain_huggingface import HuggingFaceEmbeddings
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 
 # LLM 
@@ -789,6 +794,7 @@ async def lifespan(app: FastAPI):
         )
         logger.info("Using HuggingFace Endpoint Embeddings (API)")
     else:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
         from langchain_huggingface import HuggingFaceEmbeddings
         embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
         logger.info("Using local HuggingFace Embeddings")
