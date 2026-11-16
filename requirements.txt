@@ -1,15 +1,3 @@
-# NOTE for later: torch, sentence-transformers, transformers, tokenizers, ragas,
-# pandas, and datasets are only used locally (dev embeddings + evaluation scripts) —
-# main.py on Render never imports them, since Render uses the API-based
-# HuggingFaceEndpointEmbeddings branch instead. Keeping everything in one file
-# means Render installs these unnecessarily (~1GB+ extra), which matters given
-# the app has previously hit Render's 512MB RAM limit .
-#
-# If Render OOMs again: copy the "PRODUCTION" block below into requirements.txt,
-# copy the "DEV / EVAL ONLY" block into requirements-dev.txt (with a
-# "-r requirements.txt" line at its top), then point Render's build command at
-# requirements.txt only..
-
 # PRODUCTION — required for main.py to run, on Render or locally
 fastembed==0.9.1
 
@@ -22,7 +10,6 @@ langchain==1.3.11
 langchain-community==0.3.31
 langchain-core==1.4.8
 langchain-text-splitters==1.1.2
-langchain-huggingface==1.2.2
 langchain-groq==1.1.3
 langgraph==1.2.8
 langsmith==0.9.8
@@ -33,17 +20,3 @@ langchain-tavily==0.2.18
 pypdf==6.14.2
 chromadb==1.5.9
 langchain-chroma==1.1.0
-huggingface-hub==0.36.2
-
-# DEV / EVAL ONLY — local embeddings branch + run_ragas_eval.py /
-# read_ragas_results.py. Never imported by main.py on Render.
-
-pytest>=8.0.0
-torch==2.3.1
-sentence-transformers==3.0.1
-transformers==4.42.0
-tokenizers==0.19.1
-
-ragas==0.3.9
-pandas==3.0.3
-datasets==5.0.0
