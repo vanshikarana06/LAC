@@ -32,8 +32,8 @@ jobs:
 
       - name: Run unit and integration tests (offline)
         env:
-          GROQ_API_KEY: "gsk_ci_dummy_validation_key_000000000000"
-          TAVILY_API_KEY: "tvly-ci_dummy_validation_key_000000000000"
+          GROQ_API_KEY: "dummy_ci_test_key"
+          TAVILY_API_KEY: "dummy_ci_test_key"
           EMBEDDING_BACKEND: "fastembed"
         run: |
           python -m unittest discover -s test -p "test_*.py"
