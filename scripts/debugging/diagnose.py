@@ -24,7 +24,7 @@ async def main():
         # Import vectordb AFTER lifespan has run and set the global
         from src.api.main import vectordb
 
-        question = "What is the punishment for theft under IPC?"
+        question = "what are my rights as a pregnant contract worker"
         print(f"Querying: {question!r}\n")
 
         docs_with_scores = vectordb.similarity_search_with_relevance_scores(question, k=10)

@@ -13,6 +13,7 @@ from src.api.main import (
     _is_ambiguous,
     is_grounded_answer,
     is_critic_risky,
+    expand_legal_acronyms,
     node_check_threshold,
     web_search_fallback,
     SIMILARITY_THRESHOLD,
@@ -106,6 +107,17 @@ class TestPureRoutingFunctions(unittest.TestCase):
         # Specifically requested test: "what is bnss?" has 3 words <= 4
         self.assertTrue(_is_ambiguous(0.50, "what is bnss?"))
         self.assertTrue(_is_ambiguous(0.10, "what is bnss?"))
+
+    def test_expand_legal_acronyms_posh(self):
+        query = "What is the committee under the POSH Act?"
+        expanded = expand_legal_acronyms(query)
+        self.assertIn("Sexual Harassment of Women at Workplace", expanded)
+        self.assertIn("POSH", expanded)
+
+    def test_expand_legal_acronyms_others(self):
+        self.assertIn("Right to Information", expand_legal_acronyms("file an RTI"))
+        self.assertIn("Code of Criminal Procedure", expand_legal_acronyms("arrest under CrPC"))
+        self.assertIn("Indian Penal Code", expand_legal_acronyms("theft under IPC"))
 
 
 class TestNodeCheckThreshold(unittest.TestCase):
