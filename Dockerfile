@@ -1,28 +1,34 @@
-# syntax=docker/dockerfile:1.7
-# The line above enables BuildKit's newer secret-mounting syntax used below.
 FROM python:3.12-slim
 
 WORKDIR /app
 
+# Install production dependencies only (no torch, no transformers)
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
-ENV RENDER=true
+# Pre-download FastEmbed model into cache at build time so runtime is fully offline
+ENV FASTEMBED_CACHE_PATH=/app/models
+RUN python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/all-MiniLM-L6-v2', cache_dir='/app/models')"
 
+# Ingest and build ChromaDB inside the image (data_vector_db is gitignored)
 COPY data_raw/ ./data_raw/
+COPY src/embeddings.py ./src/embeddings.py
 COPY src/ingestion/ ./src/ingestion/
+RUN python src/ingestion/embedder.py
 
-# Render's Secret Files (/etc/secrets/hf_token) or local BuildKit's
-# --secret mount (/run/secrets/hf_token). Neither path is baked into
-# any image layer either way — same security property as before, now
-# working on both my machine and Render.
-RUN --mount=type=secret,id=hf_token \
-    HF_TOKEN=$(cat /etc/secrets/hf_token 2>/dev/null || cat /run/secrets/hf_token 2>/dev/null) \
-    python src/ingestion/embedder.py
-
+# Copy application source code and static assets
 COPY src/api/ ./src/api/
 COPY static/ ./static/
 
+# Run as non-root user for security
+RUN useradd --create-home --shell /bin/bash appuser && \
+    chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 8001
 
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+# Health check using standard-library urllib without curl/wget dependencies
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request, os; port = os.environ.get('PORT', '8001'); urllib.request.urlopen(f'http://127.0.0.1:{port}/health')"
+
+CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8001}"]

@@ -1,21 +1,29 @@
 .env
+.env.*
 
 venv/
+.venv/
 
 # Python cache files — regenerated automatically
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 
-data_vector_db/
-data_vector_db_backup/
-data_vector_db_test/
+# Vector databases — rebuilt during Docker build from data_raw/
+data_vector_db*
 
 .git/
 .gitignore
+.github/
 
-# Local session storage — this is runtime data, not something to bake into the image.
-session_store.db
+# Local session storage & runtime files
+session_store.db*
+*.log
+*.sqlite
+*.db
 
-# Evaluation output/scripts — not part of the running application.
+# Evaluation files and documentation
 ragas_results*.csv
+docs/
 scripts/
+test/
