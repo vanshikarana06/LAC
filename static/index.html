@@ -473,7 +473,7 @@
       <aside>
         <div class="sidebar-section">
           <h3>Conversation</h3>
-          <button class="new-chat-btn" onclick="newChat()">✦ New chat</button>
+          <button class="new-chat-btn" id="newChatBtn">✦ New chat</button>
           <div id="historyCount" class="history-badge"></div>
         </div>
 
@@ -500,43 +500,31 @@
           <div class="quick-qs">
             <button
               class="quick-btn"
-              onclick="
-                fillQ(
-                  'What if my employer refuses to pay my gratuity after 5 years?',
-                )
-              "
+              data-question="What if my employer refuses to pay my gratuity after 5 years?"
             >
               🔀 Scenario: employer refuses gratuity?
             </button>
             <button
               class="quick-btn"
-              onclick="
-                fillQ('What are my rights as a pregnant contract worker?')
-              "
+              data-question="What are my rights as a pregnant contract worker?"
             >
               🔗 Multi-hop: pregnant contract worker
             </button>
             <button
               class="quick-btn"
-              onclick="
-                fillQ('What are consumer rights and how do I file a complaint?')
-              "
+              data-question="What are consumer rights and how do I file a complaint?"
             >
               📋 Compound: rights + complaint process
             </button>
             <button
               class="quick-btn"
-              onclick="
-                fillQ(
-                  'What are fundamental rights under the Constitution of India?',
-                )
-              "
+              data-question="What are fundamental rights under the Constitution of India?"
             >
               Simple: fundamental rights
             </button>
             <button
               class="quick-btn"
-              onclick="fillQ('What is the punishment for theft under IPC?')"
+              data-question="What is the punishment for theft under IPC?"
             >
               Simple: IPC theft punishment
             </button>
@@ -567,13 +555,10 @@
               id="questionInput"
               placeholder="Ask a legal question… e.g. What if my employer fires me while I'm pregnant?"
               rows="1"
-              onkeydown="handleKey(event)"
-              oninput="autoResize(this)"
             ></textarea>
             <button
               class="send-btn"
               id="sendBtn"
-              onclick="sendQuestion()"
               title="Send"
             >
               ➤
@@ -617,24 +602,45 @@
         }
       }
 
+function escapeHtml(str) {
+    if (str == null) return "";
+    return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 async function loadSessions() {
     try {
         const r = await fetch(`${API}/sessions`);
         const d = await r.json();
         const container = document.getElementById("sessionsList");
 
-        if (!d.sessions.length) {
+        if (!d.sessions || !d.sessions.length) {
             container.innerHTML = `<div class="act-chip" style="color: var(--text-dim); font-size: 0.7rem">No past chats yet</div>`;
             return;
         }
 
-        container.innerHTML = d.sessions.map(s => {
+        container.innerHTML = "";
+        d.sessions.forEach(s => {
             const isActive = s.session_id === sessionId;
-            return `<div class="act-chip" style="cursor:pointer; ${isActive ? 'border-color: var(--gold-dim); color: var(--gold-light);' : ''}"
-                         onclick="switchSession('${s.session_id}')">
-                        💬 ${s.preview}
-                    </div>`;
-        }).join("");
+            const chip = document.createElement("div");
+            chip.className = "act-chip session-item";
+            chip.style.cursor = "pointer";
+            if (isActive) {
+                chip.style.borderColor = "var(--gold-dim)";
+                chip.style.color = "var(--gold-light)";
+            }
+            chip.dataset.sessionId = s.session_id;
+            chip.innerHTML = `
+                <div style="font-weight: 500; font-size: 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    💬 ${escapeHtml(s.preview || s.first_question || 'Empty Chat')}
+                </div>`;
+            chip.addEventListener("click", () => switchSession(s.session_id));
+            container.appendChild(chip);
+        });
     } catch {}
 }
 
@@ -693,45 +699,47 @@ async function switchSession(newSessionId) {
       }
 
       function addMessage(role, html, sources = [], qtype = null, querySource = null) {
-    document.getElementById("welcome")?.remove();
-    const win    = document.getElementById("chatWindow");
-    const avatar = role === "user" ? "🧑" : "⚖️";
+        document.getElementById("welcome")?.remove();
+        const win    = document.getElementById("chatWindow");
+        const avatar = role === "user" ? "🧑" : "⚖️";
 
-    // question type badge
-    let typeBadge = "";
-    if (role === "ai" && qtype && TYPE_LABELS[qtype]) {
-        const t = TYPE_LABELS[qtype];
-        typeBadge = `<div class="qtype-badge ${t.cls}" style="margin-bottom:8px">${t.label}</div>`;
-    }
+        // question type badge
+        let typeBadge = "";
+        if (role === "ai" && qtype && TYPE_LABELS[qtype]) {
+            const t = TYPE_LABELS[qtype];
+            typeBadge = `<div class="qtype-badge ${t.cls}" style="margin-bottom:8px">${t.label}</div>`;
+        }
 
-    // source badge — Legal DB or Web Search
-    let sourceBadge = "";
-    if (role === "ai" && querySource && SOURCE_LABELS[querySource]) {
-        const s = SOURCE_LABELS[querySource];
-        sourceBadge = `<div class="qtype-badge ${s.cls}" style="margin-bottom:8px">${s.label}</div>`;
-    }
+        // source badge — Legal DB or Web Search
+        let sourceBadge = "";
+        if (role === "ai" && querySource && SOURCE_LABELS[querySource]) {
+            const s = SOURCE_LABELS[querySource];
+            sourceBadge = `<div class="qtype-badge ${s.cls}" style="margin-bottom:8px">${s.label}</div>`;
+        }
 
-    // sources list
-    let sourcesHtml = "";
-    if (sources.length) {
-        sourcesHtml = `<div class="sources">${sources.map(s =>
-            `<span class="source-tag">📄 ${s.source}${s.page != null ? " · p." + (s.page + 1) : ""}</span>`
-        ).join("")}</div>`;
-    }
+        // sources list
+        let sourcesHtml = "";
+        if (sources && sources.length) {
+            sourcesHtml = `<div class="sources">${sources.map(s =>
+                `<span class="source-tag">📄 ${escapeHtml(s.source || "")}${s.page != null ? " · p." + escapeHtml(String(s.page + 1)) : ""}</span>`
+            ).join("")}</div>`;
+        }
 
-    const div = document.createElement("div");
-    div.className = `msg ${role}`;
-    div.innerHTML = `
-        <div class="msg-avatar">${avatar}</div>
-        <div class="msg-body">
-            ${typeBadge}
-            ${sourceBadge}
-            <div class="bubble">${html}</div>
-            ${sourcesHtml}
-        </div>`;
-    win.appendChild(div);
-    win.scrollTop = win.scrollHeight;
-}
+        const bodyContent = role === "user" ? escapeHtml(html) : html;
+
+        const div = document.createElement("div");
+        div.className = `msg ${role}`;
+        div.innerHTML = `
+            <div class="msg-avatar">${avatar}</div>
+            <div class="msg-body">
+                ${typeBadge}
+                ${sourceBadge}
+                <div class="bubble">${bodyContent}</div>
+                ${sourcesHtml}
+            </div>`;
+        win.appendChild(div);
+        win.scrollTop = win.scrollHeight;
+      }
 
       function addTyping() {
         document.getElementById("welcome")?.remove();
@@ -789,10 +797,10 @@ function addStreamSources(div, sources) {
     // Remove blinking cursor when done
     bubble.innerHTML = bubble.innerHTML.replace('<span style="color:var(--gold)">▋</span>', '');
     
-    if (!sources.length) return;
+    if (!sources || !sources.length) return;
     const container = div.querySelector(".sources-container");
     container.innerHTML = `<div class="sources">${sources.map(s =>
-        `<span class="source-tag">📄 ${s.source}${s.page != null ? " · p."+(s.page+1) : ""}</span>`
+        `<span class="source-tag">📄 ${escapeHtml(s.source || "")}${s.page != null ? " · p." + escapeHtml(String(s.page + 1)) : ""}</span>`
     ).join("")}</div>`;
 }
 
@@ -811,65 +819,6 @@ function formatAnswer(text) {
           .replace(/---/g, "<hr>")
           .replace(/\n/g, "<br>");
       }
-
-      // async function sendQuestion() {
-      //   if (loading) return;
-      //   const input = document.getElementById("questionInput");
-      //   const question = input.value.trim();
-      //   if (!question) return;
-
-      //   input.value = "";
-      //   autoResize(input);
-      //   loading = true;
-      //   document.getElementById("sendBtn").disabled = true;
-
-      //   addMessage("user", question);
-      //   addTyping();
-
-      //   try {
-      //     const resp = await fetch(`${API}/ask`, {
-      //       method: "POST",
-      //       headers: { "Content-Type": "application/json" },
-      //       body: JSON.stringify({ question, session_id: sessionId }),
-      //     });
-
-      //     document.getElementById("typing")?.remove();
-
-      //     if (!resp.ok) {
-      //       const err = await resp.json();
-      //       addMessage(
-      //         "ai",
-      //         `<span style="color:var(--red)">Error: ${err.detail}</span>`,
-      //       );
-      //     } else {
-      //       const data = await resp.json();
-      //       sessionId = data.session_id;
-      //       // save to browser disk so it survives page refresh
-      //       localStorage.setItem("legal_advisor_session", data.session_id);
-      //       msgCount++;
-      //       document.getElementById("historyCount").textContent =
-      //         `${msgCount} message${msgCount > 1 ? "s" : ""} in this chat`;
-      //       addMessage(
-      //         "ai",
-      //         formatAnswer(data.answer),
-      //         data.sources,
-      //         data.question_type,
-      //         data.query_source  
-      //       );
-      //     }
-      //   } catch {
-      //     document.getElementById("typing")?.remove();
-      //     addMessage(
-      //       "ai",
-      //       '<span style="color:var(--red)">Could not reach the server.</span>',
-      //     );
-      //   } finally {
-      //     loading = false;
-      //     document.getElementById("sendBtn").disabled = false;
-      //     input.focus();
-      //   }
-      // }
-
 
     async function sendQuestion() {
     if (loading) return;
@@ -905,9 +854,9 @@ function formatAnswer(text) {
         let buffer     = "";
         let fullAnswer = "";
 
-        while (true) {
+        streamLoop: while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) break streamLoop;
 
             // Decode chunk and add to buffer
             buffer += decoder.decode(value, { stream: true });
@@ -919,7 +868,9 @@ function formatAnswer(text) {
             for (const line of lines) {
                 if (!line.startsWith("data: ")) continue;
                 const raw = line.slice(6).trim();
-                if (raw === "[DONE]") break;
+                if (raw === "[DONE]") {
+                    break streamLoop;
+                }
 
                 try {
                     const msg = JSON.parse(raw);
@@ -954,7 +905,7 @@ function formatAnswer(text) {
                     else if (msg.type === "error") {
                         const errMsg = msg.message || msg.content || "Something went wrong generating the answer.";
                         updateStreamingBubble(aiDiv, 
-                            `<span style="color:var(--red)">Error: ${errMsg}</span>`);
+                            `<span style="color:var(--red)">Error: ${escapeHtml(errMsg)}</span>`);
                     }
                 } catch(e) {
                     // Skip malformed JSON chunks
@@ -968,6 +919,12 @@ function formatAnswer(text) {
     } finally {
         loading = false;
         document.getElementById("sendBtn").disabled = false;
+        if (aiDiv) {
+            const bubble = aiDiv.querySelector(".streaming-bubble");
+            if (bubble) {
+                bubble.innerHTML = bubble.innerHTML.replace('<span style="color:var(--gold)">▋</span>', '');
+            }
+        }
         input.focus();
     }
 }
@@ -988,6 +945,18 @@ function formatAnswer(text) {
         autoResize(i);
         i.focus();
       }
+
+      // Wire DOM event listeners
+      document.getElementById("newChatBtn")?.addEventListener("click", newChat);
+      document.getElementById("sendBtn")?.addEventListener("click", sendQuestion);
+      const qInput = document.getElementById("questionInput");
+      if (qInput) {
+        qInput.addEventListener("keydown", handleKey);
+        qInput.addEventListener("input", () => autoResize(qInput));
+      }
+      document.querySelectorAll(".quick-btn").forEach(btn => {
+        btn.addEventListener("click", () => fillQ(btn.dataset.question || ""));
+      });
 
       checkHealth();
       loadActs();
