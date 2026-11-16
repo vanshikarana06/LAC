@@ -26,6 +26,14 @@ import datetime
 import json
 import subprocess
 
+# Prevent UnicodeEncodeError on Windows PowerShell redirection (cp1252 -> utf-8)
+if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.api.main import (
@@ -201,6 +209,7 @@ async def main():
             "chunk_count": chunk_count,
             "splitter_name": args.splitter_name,
             "db_path": os.getenv("DB_PATH", "data_vector_db"),
+            "embedding_backend": os.getenv("EMBEDDING_BACKEND", "fastembed"),
         }
         with open(sidecar_path, "w", encoding="utf-8") as f:
             json.dump(sidecar_data, f, indent=2)

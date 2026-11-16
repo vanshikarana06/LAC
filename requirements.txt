@@ -11,6 +11,7 @@
 # requirements.txt only..
 
 # PRODUCTION — required for main.py to run, on Render or locally
+fastembed==0.9.1
 
 fastapi==0.139.0
 uvicorn[standard]==0.50.2

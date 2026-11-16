@@ -1,29 +1,24 @@
 import os
+import sys
 import re
+
+# Ensure project root is on sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEndpointEmbeddings
 from langchain_core.documents import Document
+from src.embeddings import get_embeddings
 import dotenv
 dotenv.load_dotenv()
-
-HF_TOKEN = os.getenv("HF_TOKEN")
  
 class LegalIngestor:
     def __init__(self, data_path="data_raw", db_path="data_vector_db", old_splitter=False):
         self.data_path = data_path
         self.db_path = db_path
         self.old_splitter = old_splitter
-        if os.getenv("RENDER"):
-            self.embeddings = HuggingFaceEndpointEmbeddings(
-                model="sentence-transformers/all-MiniLM-L6-v2",
-                huggingfacehub_api_token=HF_TOKEN
-            )
-        else:
-            os.environ.setdefault("HF_HUB_OFFLINE", "1")
-            from langchain_huggingface import HuggingFaceEmbeddings
-            self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.embeddings = get_embeddings()
  
     def clean_text(self, text):
         # Remove multiple newlines
