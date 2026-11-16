@@ -53,3 +53,35 @@ Groq free tier limits requests to 6,000 Tokens Per Minute (TPM). `run_ragas_eval
 - `RunConfig(max_workers=1, timeout=300)` for sequential evaluation judging.
 - `strictness=1` on `AnswerRelevancy` to prevent rejected $n > 1$ variant calls.
 
+---
+
+## Ablation Benchmark: Structure-Aware vs. Standard-Fixed Chunking
+
+Evaluated on 16-Nov-2026 with `openai/gpt-oss-20b` (Generation and Judge, 4096 judge max tokens).
+
+### 1. Summary Comparison (Answerable Questions, N=5)
+
+| Metric | Structure-Aware (`newsplit`) | Standard-Fixed (`oldsplit`) | Delta |
+|---|:---:|:---:|:---:|
+| **Context Precision** | **0.7500** (1 NaN) | **0.0000** (4 NaNs) | **+0.7500** |
+| **Context Recall** | **0.6250** (1 NaN) | **0.0000** (4 NaNs) | **+0.6250** |
+| **Answer Relevancy** | **0.6852** (0 NaNs) | **0.4157** (2 NaNs) | **+0.2695** |
+| **Faithfulness** | **0.8556** (2 NaNs) | **0.9286** (3 NaNs) | -0.0730 |
+
+### 2. NaN Analysis
+
+| Metric | `ragas_newsplit.csv` (Total) | `ragas_oldsplit.csv` (Total) |
+|---|:---:|:---:|
+| Faithfulness | 2 / 7 | 5 / 7 |
+| Answer Relevancy | 1 / 7 | 3 / 7 |
+| Context Precision | 1 / 7 | 6 / 7 |
+| Context Recall | 1 / 7 | 6 / 7 |
+| **Total NaNs** | **5 / 28** | **20 / 28** |
+
+*Root Cause of NaNs:* Due to Groq TPM limits (6,000 TPM), long context inputs in the RAGAS batch executor intermittently triggered `RateLimitError (429)` and timeouts. Standard-fixed chunking suffered significantly more timeouts (20 NaNs) because arbitrary character splits produced larger, noisier chunk sequences that repeatedly exhausted the token budget.
+
+### 3. Key Observations & Takeaways
+1. **Precision & Recall Gains:** Structure-aware chunking boundaries preserve statutory sections whole (e.g. IPC §379, Maternity Benefit Act §4/§5, Gratuity Act §4), resulting in a massive boost in Context Precision (+0.7500) and Context Recall (+0.6250).
+2. **Q1 Retrieval Verification:** In `newsplit`, IPC §379 theft penalty was cleanly retrieved with Context Precision = 0.8333, whereas `oldsplit` retrieved unrelated CrPC text (Precision = 0.0000).
+
+

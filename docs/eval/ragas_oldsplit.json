@@ -1,0 +1,10 @@
+{
+  "generation_model": "openai/gpt-oss-20b",
+  "judge_model": "openai/gpt-oss-20b",
+  "judge_max_tokens": 4096,
+  "date": "2026-11-16T03:53:20.948900+00:00",
+  "git_sha": "aa5842fd510ed2a1be38ce8e5675a49328c7a1e1",
+  "chunk_count": 3749,
+  "splitter_name": "standard-fixed",
+  "db_path": "data_vector_db_oldsplit"
+}
